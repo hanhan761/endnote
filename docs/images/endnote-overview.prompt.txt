@@ -1,0 +1,19 @@
+Use case: infographic-diagram.
+Asset type: A polished wide 16:9 GitHub README feature overview image for the open-source repository "endnote".
+Primary request: Explain what endnote actually does: experiment events are reported by a Python SDK or HTTP API, declarative conditions trigger an email notification. The server does not execute experiments and does not automatically restart them.
+Style: premium editorial technology infographic, clean flat illustration with subtle dimensional details, precise readable Simplified Chinese typography. Match the project's restrained sage-green, dark forest-green and warm off-white visual identity. Generous negative space, elegant technical drawing lines, strong visual hierarchy. Not a busy dashboard screenshot.
+Composition: Top brand title and Chinese tagline. Middle left-to-right flow with three well-separated connected zones: an illustrated laptop with a small training chart (experiment client), a compact rule-processing service (endnote), and a large email envelope with a notification card (verified recipient). Five small condition tiles beneath the flow. Bottom a restrained security strip with three icons and short labels. Ensure all text fits with comfortable margins and is readable at GitHub README width.
+Exact text to render, use only these labels:
+Title: "endnote"
+Tagline: "end 的时候 note 一下"
+Subtitle: "实验状态触发 · 邮箱主动提醒"
+Flow label 1: "你的实验"
+Small label 1: "Python SDK / HTTP API"
+Flow label 2: "条件判断"
+Small label 2: "endnote"
+Flow label 3: "邮箱通知"
+Small label 3: "自定义邮件内容"
+Condition tiles: "完成", "失败", "心跳失联", "运行超时", "指标阈值"
+Security strip labels: "邮箱验证", "独立实验密钥", "限流与持久化重试"
+Footer small label: "提醒系统 · 不执行或自动重启实验"
+Constraints: accurate product claims only. No logos from other companies, no physical GPU/server picture needed, no emails, URLs, credentials, random code, watermark or decorative pseudo-text. Use coherent simple icons for heartbeat, clock, threshold graph, completion check, failure cross. Show restrained directional connectors, no extra unexplained arrows. Chinese text must be exactly as supplied. Opaque background.
