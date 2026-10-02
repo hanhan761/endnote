@@ -29,3 +29,15 @@ sudo -n python3 /home/codex-admin/endnote-activate.py \
 Rollback restores the original tunnel configuration and disables endnote. It retains
 database and credentials for a controlled reactivation. Confirm no later tunnel
 changes would be overwritten before using an old record.
+
+## First-binding notification update — 2026-10-02
+
+- Runtime source: 556fb190da597e46912ae7f967e13984faa3476a.
+- Release SHA-256: 4b61a39b055d7d467a871135b385bb2d7d233fa4c855cf7a2e4270ebe2c16b9d.
+- Rollback record: /opt/endnote/ops/20261002T120935Z/release.json.
+- Previous immutable artifact retained: beafbecf017b53ea30a027d036b3d20f1809ea1c37551cf0b6d941390aa1631e.
+- No schema migration; same tunnel route; only endnote restarted.
+- Local behavior tests: 16 passed, including one first-binding mail and no duplicate on account re-verification.
+- Installed skill validated; recipient preference is stored outside this repository in user-private configuration.
+- SMTP accepted the requested verification message. First binding and the success test message require the recipient to complete verification; no verification code or real address is recorded here.
+- Origin/public health passed repeatedly; observed more than 60 seconds, NRestarts=0, memory approximately 14 MiB.
