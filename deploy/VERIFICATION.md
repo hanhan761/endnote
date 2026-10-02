@@ -12,7 +12,8 @@
 - SMTP: TLS connection, authentication and NOOP passed, no real recipient test sent.
 - Isolation: systemd DynamicUser, ProtectHome, ProtectSystem=strict, NoNewPrivileges, 256 MiB memory limit; only 127.0.0.1:8380 listens.
 - Origin and public HTTPS /endnote/health: 200 with ok=true, mail_enabled=true, signup_enabled=true.
-- Existing tunnel site entrypoints: all twelve returned HTTP 200 after the initial activation.
+- Final observation: more than 90 seconds after reactivation, consecutive successful origin/public health checks, NRestarts=0, memory approximately 13 MiB.
+- Existing tunnel site entrypoints: all eleven distinct hostnames returned HTTP 200 after both activation and rollback/reactivation.
 - First-install rollback: executed successfully while accounts/tasks were both empty. Verified that endnote's port closed, cloudflared remained active, and the existing application health endpoint passed. Reactivated the exact retained artifact without rebuilding.
 - Current rollback record: /opt/endnote/ops/20261002T115055Z/release.json.
 - Previous first-install record: /opt/endnote/ops/20261002T114834Z/release.json.
