@@ -138,10 +138,13 @@ def main():
               baseline=baseline,activated_at=stamp)
     record_path=ops/"release.json";record(record_path,info)
     release=ROOT/"releases"/args.sha256
-    if release.exists():raise RuntimeError("release already exists; use a new version")
-    release.mkdir(parents=True)
-    for name,content in data.items():
-        dest=release/name;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(content);dest.chmod(0o644)
+    if release.exists():
+        actual={str(p.relative_to(release)):p.read_bytes() for p in release.rglob("*") if p.is_file()}
+        if actual!=data:raise RuntimeError("retained immutable release differs from verified artifact")
+    else:
+        release.mkdir(parents=True)
+        for name,content in data.items():
+            dest=release/name;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(content);dest.chmod(0o644)
     credential=Path("/etc/endnote/smtp.json");credential.parent.mkdir(mode=0o700,exist_ok=True)
     if not credential.exists():
         credential.write_text(json.dumps(smtp_config()));credential.chmod(0o600)
