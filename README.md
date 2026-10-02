@@ -39,7 +39,9 @@ python -m endnote.client request-code --email you@example.com
 python -m endnote.client verify --email you@example.com
 ~~~
 
-第二条命令会提示你输入邮件中的完整验证码，并将账号密钥保存到自己的用户配置目录。后续客户端会自动读取，不需要每次输入密钥。
+第二条命令会提示你输入邮件中的完整验证码，并将账号密钥与邮箱保存到自己的用户配置目录。首次验证绑定成功后，会自动发送一封“邮箱绑定成功”的测试邮件；后续复用或刷新密钥不重复发送。
+
+后续客户端会自动读取账号，不需要重复确认邮箱或输入密钥。也可以在自己的 ~/.config/endnote/preferences.json 中保存 email 字段作为默认地址；request-code / verify 未提供 --email 时会读取它。真实邮箱只放在私有配置中，不要提交到仓库。
 
 也可以在[网页](https://am.matterswarm.com/endnote/)验证邮箱、领取账号密钥，再通过 ENDNOTE_API_KEY 环境变量交给客户端。不要把真实密钥写进代码、提交到 Git 或放进 URL。
 

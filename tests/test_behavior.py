@@ -27,7 +27,9 @@ class Behavior(unittest.TestCase):
         self.store.request_verification(address,ip)
         self.store.deliver_one()
         token=re.search(r"\n\n([A-Za-z0-9_-]{43})\n",self.sent[-1][2]).group(1)
-        return self.store.verify(address,token,ip)["api_key"]
+        key=self.store.verify(address,token,ip)["api_key"]
+        self.store.deliver_one()  # Drain the first-binding notification.
+        return key
     def task(self,**config):
         return self.store.create_task(self.key,dict(name="test",**config))
     def event(self,task,kind,event_id="event",**data):
@@ -45,6 +47,14 @@ class Behavior(unittest.TestCase):
             self.assertFalse(c.execute("SELECT * FROM challenges").fetchall())
             self.assertTrue(all(not x[0] for x in c.execute("SELECT body FROM notices WHERE kind='verification'")))
         with self.assertRaises(APIError): self.store.verify("a@example.com","wrong","1.2.3.4")
+    def test_first_binding_sends_success_mail_once(self):
+        binding=[x for x in self.sent if x[1]=="[endnote] 邮箱绑定成功"]
+        self.assertEqual(len(binding),1)
+        self.assertEqual(binding[0][0],"a@example.com")
+        self.assertNotIn(self.key,binding[0][2])
+        self.signup("a@example.com","1.2.3.4")
+        self.assertEqual(len([x for x in self.sent if x[1]=="[endnote] 邮箱绑定成功"]),1)
+
     def test_signup_limits_prevent_repeated_mail(self):
         for _ in range(2): self.store.request_verification("a@example.com","1.2.3.4")
         with self.assertRaises(APIError) as e: self.store.request_verification("a@example.com","1.2.3.4")
@@ -120,6 +130,7 @@ class Behavior(unittest.TestCase):
         self.assertEqual(restarted.task_detail(self.key,task["id"])["notifications"][0]["state"],"sent")
     def test_full_mail_quota_preserves_events_and_deferred_notifications(self):
         self.cfg.mail_per_user_day=1
+        self.now+=86400  # First-binding mail consumed the initial daily slot.
         one=self.task();self.event(one,"succeeded")
         self.store.deliver_one()
         two=self.task();self.event(two,"failed")

@@ -89,17 +89,30 @@ class Experiment:
             warnings.warn("endnote could not report completion; check notification service",RuntimeWarning)
         return False
 
+def saved_email():
+    from pathlib import Path
+    directory=Path.home()/".config"/"endnote"
+    for name in ["preferences.json","credentials.json"]:
+        file=directory/name
+        if file.exists():
+            value=json.loads(file.read_text()).get("email")
+            if value: return value
+    return None
+
 def main():
     parser=argparse.ArgumentParser(description="endnote: end, then note")
     parser.add_argument("--url",default=os.getenv("ENDNOTE_URL","https://am.matterswarm.com/endnote"))
     sub=parser.add_subparsers(dest="action",required=True)
-    p=sub.add_parser("request-code"); p.add_argument("--email",required=True)
-    p=sub.add_parser("verify"); p.add_argument("--email",required=True)
+    p=sub.add_parser("request-code"); p.add_argument("--email")
+    p=sub.add_parser("verify"); p.add_argument("--email")
     p=sub.add_parser("list")
     p=sub.add_parser("run"); p.add_argument("--name",required=True); p.add_argument("--heartbeat-timeout",type=int,default=300); p.add_argument("--heartbeat-interval",type=int,default=60); p.add_argument("--runtime-timeout",type=int); p.add_argument("--rules",help="JSON file of metric rules"); p.add_argument("command",nargs=argparse.REMAINDER)
     p=sub.add_parser("event"); p.add_argument("--task",required=True); p.add_argument("--type",required=True,choices=["heartbeat","metric","succeeded","failed","cancelled"]); p.add_argument("--metrics",default="{}"); p.add_argument("--message",default="")
     args=parser.parse_args()
     client=Client(args.url)
+    if args.action in {"request-code","verify"}:
+        args.email=args.email or saved_email()
+        if not args.email: parser.error("provide --email once, or save email in ~/.config/endnote/preferences.json")
     if args.action=="request-code":
         print(json.dumps(client.request("/v1/auth/request",{"email":args.email},key=""),ensure_ascii=False))
     elif args.action=="verify":
@@ -111,7 +124,7 @@ def main():
         target=Path.home()/".config"/"endnote"/"credentials.json"
         target.parent.mkdir(parents=True,exist_ok=True)
         fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
-        with os.fdopen(fd,"w") as f: json.dump({"url":client.url,"api_key":result["api_key"]},f)
+        with os.fdopen(fd,"w") as f: json.dump({"url":client.url,"api_key":result["api_key"],"email":result["email"]},f)
         os.chmod(target,0o600)
         print("Saved account key to "+str(target)+"; load it into ENDNOTE_API_KEY privately.")
     elif args.action=="list": print(json.dumps(client.request("/v1/tasks"),ensure_ascii=False,indent=2))

@@ -152,7 +152,10 @@ class Store:
             if account: c.execute("UPDATE accounts SET key_hash=? WHERE id=?",(digest(key),account['id']))
             else:
                 if c.execute("SELECT count(*) FROM accounts").fetchone()[0]>=self.settings.max_accounts: raise APIError(503,"registration capacity reached")
-                c.execute("INSERT INTO accounts VALUES(?,?,?,?)",(secrets.token_hex(16),address,digest(key),self.clock()))
+                account_id=secrets.token_hex(16)
+                c.execute("INSERT INTO accounts VALUES(?,?,?,?)",(account_id,address,digest(key),self.clock()))
+                self.queue(c,account_id,None,address,"[endnote] 邮箱绑定成功",
+                           "你的邮箱已成功绑定 endnote。\n\n这是一封首次绑定测试邮件。以后实验完成、失败或满足你选择的提醒条件时，通知将发送到这个邮箱。\n\n复用账号无需再次绑定，正常心跳不会定期发邮件。\n\n管理实验："+self.settings.public_url+"/",'binding')
             c.execute("DELETE FROM challenges WHERE email=?",(address,))
             c.execute("UPDATE notices SET body='',state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END WHERE recipient=? AND kind='verification'",(address,))
         return {"api_key":key,"email":address,"warning":"save this key; it is shown only once"}
