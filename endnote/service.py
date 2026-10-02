@@ -19,6 +19,10 @@ EMAIL = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_\x60{|}~-]{1,64}@[A-Za-z0-9](?:[A-Z
 NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,63}")
 OPERATORS = {"gt": lambda a,b:a>b, "gte": lambda a,b:a>=b,
              "lt": lambda a,b:a<b, "lte": lambda a,b:a<=b, "eq": lambda a,b:a==b}
+DEFAULT_SUBJECT = "[endnote][$reason] $name · #$task_id"
+LEGACY_SUBJECT = "[endnote] $name · $reason"
+REASON_LABELS = {"succeeded":"成功", "failed":"失败", "heartbeat_timeout":"中断", "runtime_timeout":"超时"}
+
 NOTIFY = {"succeeded", "failed", "heartbeat_timeout", "runtime_timeout"}
 TERMINAL = {"succeeded", "failed", "cancelled"}
 
@@ -198,13 +202,13 @@ class Store:
             if not isinstance(metric,str) or not NAME.fullmatch(metric) or not isinstance(op,str) or op not in OPERATORS: raise APIError(400,"invalid metric rule")
             value=number(rule.get('value'),-1e100,1e100,'metric threshold')
             checked.append({'metric':metric,'op':op,'value':value})
-        subject=text(data.get('subject','[endnote] $name · $reason'),160,'subject')
+        subject=text(data.get('subject',DEFAULT_SUBJECT),160,'subject')
         if '\n' in subject or '\t' in subject: raise APIError(400,"subject must be one line")
         body=text(data.get('body','实验：$name\n状态：$status\n触发条件：$reason\n说明：$message\n指标：$metrics\n时间：$time'),4000,'body')
         # Validate templates at creation instead of crashing the background worker.
         for template in [subject,body]:
-            try: Template(template).substitute({x:x for x in ['name','status','reason','message','metrics','time']})
-            except (KeyError,ValueError): raise APIError(400,"invalid template; use $name $status $reason $message $metrics $time or $$")
+            try: Template(template).substitute({x:x for x in ['name','status','reason','message','metrics','time','task_id']})
+            except (KeyError,ValueError): raise APIError(400,"invalid template; use $name $status $reason $message $metrics $time or $task_id or $")
         config=dict(notify_on=notify,heartbeat_timeout=hb,runtime_timeout=runtime,rules=checked,subject=subject,body=body)
         return name,config
 
@@ -227,7 +231,7 @@ class Store:
         if not self.settings.signup_enabled or not self.settings.mail_enabled:raise APIError(503,'service temporarily unavailable')
         address=email(data.get('email'))
         allowed={k:data[k] for k in ['name','notify_on','heartbeat_timeout','runtime_timeout','rules'] if k in data}
-        allowed['subject']='[endnote] $name · $reason'
+        allowed['subject']=DEFAULT_SUBJECT
         allowed['body']='任务：$name\n状态：$status\n触发条件：$reason\n指标：$metrics\n时间：$time'
         name,config=self.validate_config(allowed)
         if any(not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}',r['metric']) for r in config['rules']):raise APIError(400,'快捷入口指标名只能使用字母、数字和下划线')
@@ -332,8 +336,24 @@ class Store:
         recipient=c.execute("SELECT COALESCE(g.recipient,a.email) FROM accounts a LEFT JOIN guest_accounts g ON g.id=a.id WHERE a.id=?",(task['owner'],)).fetchone()[0]
         if self.blocked(c,recipient):return False
         fields=dict(name=task['name'],status=task['status'],reason=reason,message=task['message'],metrics=task['metrics'],time=time.strftime('%Y-%m-%d %H:%M:%S UTC',time.gmtime(self.clock())))
-        subject=Template(config['subject']).safe_substitute(fields).replace('\n',' ').replace('\r',' ')[:200]
+        fields['task_id']=task['id'][:8]
+        template=config['subject']
+        if template in {DEFAULT_SUBJECT,LEGACY_SUBJECT}:
+            template=DEFAULT_SUBJECT
+            subject_fields=dict(fields,reason=REASON_LABELS.get(reason,'指标达标'))
+        else: subject_fields=fields
+        subject=Template(template).safe_substitute(subject_fields).replace('\n',' ').replace('\r',' ')[:200]
         body=Template(config['body']).safe_substitute(fields)[:10000]
+        metric_reason=reason
+        if reason not in REASON_LABELS:
+            parts=reason.split(' ')
+            if len(parts)==3:
+                metric,op,threshold=parts
+                operation={'gt':'大于','gte':'大于等于','lt':'小于','lte':'小于等于','eq':'等于'}.get(op,op)
+                metric_reason=f"{metric} {operation} {threshold}（上报值：{json.loads(task['metrics']).get(metric)}）"
+        explanation={'succeeded':'实验主动报告成功结束。','failed':'实验主动报告失败（例如命令非零退出或代码异常）。','heartbeat_timeout':f"超过 {config['heartbeat_timeout']:g} 秒未收到新心跳；最后心跳："+time.strftime('%Y-%m-%d %H:%M:%S UTC',time.gmtime(task['heartbeat']))+'。这表示上报失联，可能是进程退出、卡住或网络中断。','runtime_timeout':f"实验运行时长达到设定上限 {config['runtime_timeout']} 秒。"}.get(reason,'上报指标满足设定规则：'+metric_reason+'。')
+        body='发送原因：'+explanation+'\n\n'+body
+        body+='\n任务 ID：'+task['id']+'\n创建时间：'+time.strftime('%Y-%m-%d %H:%M:%S UTC',time.gmtime(task['created']))
         c.execute("SAVEPOINT enqueue")
         try:
             self.queue(c,task['owner'],task['id'],recipient,subject,body,reason)

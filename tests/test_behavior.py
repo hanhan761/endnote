@@ -166,6 +166,37 @@ class Behavior(unittest.TestCase):
         self.assertEqual(self.count(task),1)
         self.now+=61;self.store.tick();self.store.tick()
         self.assertEqual(self.count(task,"runtime_timeout"),1)
+    def test_mail_identifies_experiment_and_trigger_reason(self):
+        for quick in [False,True]:
+            task=self.store.quick_task({"email":"titles@example.com","name":"模型 seed42 第3次"},"7.7.7.7") if quick else self.store.create_task(self.key,{"name":"模型 seed42 第3次"})
+            self.event(task,"succeeded")
+            with self.store.db() as c:
+                row=c.execute("SELECT subject,body FROM notices WHERE task=?",(task["id"],)).fetchone()
+            self.assertEqual(row[0],"[endnote][成功] 模型 seed42 第3次 · #"+task["id"][:8])
+            self.assertIn("发送原因：实验主动报告成功结束。",row[1])
+            self.assertIn(task["id"],row[1])
+            self.assertIn("创建时间：",row[1])
+        task=self.task(heartbeat_timeout=30)
+        # Existing stored default templates also adopt the new subject.
+        with self.store.db() as c:
+            cfg=json.loads(c.execute("SELECT config FROM tasks WHERE id=?",(task["id"],)).fetchone()[0])
+            cfg['subject']='[endnote] $name · $reason'
+            c.execute("UPDATE tasks SET config=? WHERE id=?",(json.dumps(cfg),task["id"]))
+        self.now+=31;self.store.tick()
+        with self.store.db() as c:
+            row=c.execute("SELECT subject,body FROM notices WHERE task=?",(task["id"],)).fetchone()
+        self.assertIn("[中断]",row[0])
+        self.assertIn("超过 30 秒未收到新心跳",row[1])
+        self.assertIn("最后心跳：",row[1])
+        for kind,label,config in [('failed','失败',{}),('runtime_timeout','超时',{'runtime_timeout':30}),('metric','指标达标',{'rules':[{'metric':'loss','op':'lt','value':.01}]})]:
+            task=self.task(**config)
+            if kind=='runtime_timeout':self.now+=31;self.store.tick()
+            else:self.event(task,kind,metrics={'loss':.005})
+            with self.store.db() as c:
+                row=c.execute("SELECT subject,body FROM notices WHERE task=? AND kind=?",(task["id"],'loss lt 0.01' if kind=='metric' else kind)).fetchone()
+            self.assertIn('['+label+']',row[0])
+            self.assertIn('发送原因：',row[1])
+
     def test_custom_mail_plain_text_and_header_safety(self):
         task=self.task(subject="$name $message",body="$reason $metrics")
         self.event(task,"succeeded",message="hello\nBcc: bad@example.com")
