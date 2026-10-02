@@ -1,288 +1,128 @@
 # endnote
 
-![endnote 功能概览：实验通过 Python SDK 或 HTTP API 上报状态，按完成、失败、失联、超时和指标条件触发邮箱通知](docs/images/endnote-overview.png)
+![endnote 功能概览](docs/images/endnote-overview.png)
 
-**end 的时候 note 一下。**
+**end 的时候 note 一下。** 为实验和后台任务提供条件触发的邮件提醒。
 
-endnote 是一个面向长时间实验和后台任务的邮件提醒接口。你的程序上报状态、心跳或指标，endnote 在条件满足时向你验证过的邮箱发通知，帮助你及时知道任务完成、失败或失联。
+[打开网页直接使用](https://am.matterswarm.com/endnote/)：填收件邮箱、选择条件、创建提醒，下载脚本后运行：
 
-**[打开网页开始使用](https://am.matterswarm.com/endnote/)** · [Python 客户端](endnote/client.py) · [HTTP API](#http-api) · [Codex 技能](#codex-技能)
+~~~bash
+python endnote-task.py -- python train.py
+~~~
 
-## 可以提醒什么？
+无需验证码，也无需手动申请密钥。脚本自动配置当前任务的访问凭据；请保管好下载的脚本，不要公开上传。创建后立即开始监控，请及时启动实验。
 
-| 你关心的情况 | 提醒条件 |
+## 什么时候提醒
+
+| 条件 | 行为 |
 | --- | --- |
-| 实验结束了 | 程序报告成功或失败 |
-| 进程突然退出、机器断网了 | 超过指定时间未收到心跳 |
-| 实验运行得太久了 | 达到你设定的运行时长 |
-| 指标达到目标或出现异常了 | 例如 loss < 0.01、temperature > 80 |
+| 成功 | 实验正常结束后提醒 |
+| 失败 | 实验报错或命令非零退出后提醒 |
+| 失联 | 超过指定时间没有收到心跳时提醒，默认 5 分钟 |
+| 运行超时 | 达到你选择的运行时长时提醒 |
+| 指标阈值 | 代码上报的指标满足规则时提醒 |
 
-你可以自定义邮件标题和正文。使用公开接口不需要自己部署服务器或配置发件邮箱；你只需要一个收件邮箱，以及能访问 HTTPS 的实验程序。
+条件可以选择。正常心跳只上报状态，**不会每隔一分钟发邮件**。首次创建提醒会发送一封测试邮件，后续创建不重复发送绑定测试。
 
-## 快速开始
+## 不想收到邮件怎么办
 
-Python 客户端需要 **Python 3.10 或更新版本**，没有第三方运行依赖。
+**每封邮件底部都有一键屏蔽链接。** 点击后，这个邮箱会加入全局黑名单：取消待发邮件、停止相关任务的提醒，任何人都不能再用接口向它发信。已交给邮件服务器的邮件无法撤回。
 
-### 1. 获取客户端
+链接使用随机令牌，不在 URL 中暴露邮箱。请不要公开分享屏蔽链接。
+
+## Python 命令行接入
+
+Python 3.10+，只用标准库，无第三方运行依赖：
 
 ~~~bash
 git clone https://github.com/hanhan761/endnote.git
 cd endnote
+python -m endnote.client run --email you@example.com --name "模型训练" -- python train.py
 ~~~
 
-### 2. 验证你的收件邮箱
+可将 email 保存到自己用户目录的 ~/.config/endnote/preferences.json，后续省略 --email；技能会复用已授权的默认邮箱，不重复询问。不要提交真实邮箱或私有配置到 Git。
 
-在仓库根目录运行，把示例邮箱替换为自己的邮箱：
+实验命令在调用客户端的机器上执行；服务只接收事件，不执行你提交的命令。
 
-~~~bash
-python -m endnote.client request-code --email you@example.com
-python -m endnote.client verify --email you@example.com
-~~~
-
-第二条命令会提示你输入邮件中的完整验证码，并将账号密钥与邮箱保存到自己的用户配置目录。首次验证绑定成功后，会自动发送一封“邮箱绑定成功”的测试邮件；后续复用或刷新密钥不重复发送。
-
-后续客户端会自动读取账号，不需要重复确认邮箱或输入密钥。也可以在自己的 ~/.config/endnote/preferences.json 中保存 email 字段作为默认地址；request-code / verify 未提供 --email 时会读取它。真实邮箱只放在私有配置中，不要提交到仓库。
-
-也可以在[网页](https://am.matterswarm.com/endnote/)验证邮箱、领取账号密钥，再通过 ENDNOTE_API_KEY 环境变量交给客户端。不要把真实密钥写进代码、提交到 Git 或放进 URL。
-
-> 验证码 15 分钟内有效，以最新一封为准。重新验证同一个邮箱会替换原账号密钥；已创建实验的独立密钥仍然有效。
-
-### 3. 给任务加上提醒
-
-先运行一个十秒钟的小任务，检查接入：
-
-~~~bash
-python -m endnote.client run --name "我的第一个任务" -- python -c "import time; time.sleep(10)"
-~~~
-
-任务结束后，endnote 会将完成通知加入邮件发送队列。查看实验状态：
-
-~~~bash
-python -m endnote.client list
-~~~
-
-接入真实实验时，将最后的命令换成你的实验命令：
-
-~~~bash
-python -m endnote.client run --name "模型训练" -- python /path/to/train.py
-~~~
-
-包装器默认每 60 秒发送一次心跳，300 秒未收到心跳则触发失联提醒；正常退出报告成功，非零退出报告失败。实验在你运行命令的计算机上执行，endnote 接口只接收通知事件。
-
-命令在当前工作目录运行。如果实验依赖自己的项目目录，请在该目录调用仓库内的独立脚本：
-
-~~~bash
-python /path/to/endnote/skills/endnote/scripts/endnote.py run --name "模型训练" -- python train.py
-~~~
-
-这里的 /path/to/... 是示例路径，请换成你自己的实际路径。
-
-## 在 Python 代码里按指标提醒
-
-在能够导入 endnote 的项目中使用 SDK：可以在本仓库根目录运行示例，或将仓库中的 endnote 目录复制到你的实验项目。
-
-下面的代码模拟上报训练指标；实际接入时，把模拟循环替换为自己的训练代码：
+## Python 指标提醒
 
 ~~~python
-import time
 from endnote.client import Client
 
 with Client().experiment(
     "模型训练",
+    email="you@example.com",
     heartbeat_timeout=300,
-    heartbeat_interval=60,
     runtime_timeout=7200,
     rules=[{"metric": "loss", "op": "lt", "value": 0.01}],
-    subject="[endnote] $name · $reason",
-    body="实验：$name\n状态：$status\n说明：$message\n指标：$metrics",
 ) as run:
-    for epoch in range(8):
-        time.sleep(1)
-        loss = 0.5 ** (epoch + 1)  # 示例值，替换为实际指标
-        run.metric(epoch=epoch, loss=loss)
+    # 在真实训练循环中主动上报指标
+    run.metric(loss=0.005)
 ~~~
 
-进入上下文时创建实验并开始自动心跳；正常离开报告成功，发生异常报告失败。指标需要你的代码主动上报，客户端不会自动解析日志。
-
-规则支持 gt、gte、lt、lte、eq，分别表示大于、大于等于、小于、小于等于、等于。每个实验最多配置 10 条规则，每条命中后提醒一次。
-
-**自动心跳只证明上报进程仍然存活，不能证明训练正在取得进展。** 如果你要检测循环卡住，应在实际完成关键步骤后上报心跳，并配置合适的运行超时条件。
-
-## 自定义通知
-
-在网页创建实验，或通过 SDK / HTTP API 设置以下字段：
-
-| 字段 | 说明 | 默认值 |
-| --- | --- | --- |
-| name | 实验名称，必填 | — |
-| notify_on | 要启用的状态和超时提醒 | 成功、失败、失联、运行超时 |
-| heartbeat_timeout | 失联阈值，单位秒，范围 30–86400 | 300 |
-| runtime_timeout | 运行时长阈值，单位秒，范围 30–2592000 | 不启用 |
-| rules | 指标阈值规则 | 无 |
-| subject | 邮件标题，必须为单行 | [endnote] $name · $reason |
-| body | 纯文本邮件正文 | 实验名称、状态、触发原因等 |
-
-邮件模板支持这些变量：
-
-| 变量 | 内容 |
-| --- | --- |
-| $name | 实验名称 |
-| $status | 实验当前状态 |
-| $reason | 触发提醒的条件 |
-| $message | 你上报的说明 |
-| $metrics | 你上报的指标 |
-| $time | 触发时间，UTC |
-
-要显示字面美元符，写成 $$。模板只替换文字，不执行表达式或代码。
-
-通知只发送到当前账号验证过的邮箱。使用另一个收件邮箱时，验证那个邮箱并使用对应账号；用户不能冒用别人的收件地址或任意修改发件人。
+正常退出报告成功，异常退出报告失败。指标需要代码主动上报，客户端不解析日志。规则支持 gt、gte、lt、lte、eq；每条规则命中后提醒一次。自动心跳证明上报进程活着；要检测训练卡住，需要在实际关键步骤上报进展。
 
 ## HTTP API
 
-任何能发送 HTTPS JSON 请求的语言都可以接入，不必使用 Python。
+基地址：https://am.matterswarm.com/endnote
 
-**基地址：** https://am.matterswarm.com/endnote
-
-鉴权头为 Authorization: Bearer YOUR_KEY。需要 POST 请求时，设置 Content-Type: application/json。
-
-有两种密钥：
-
-- **账号密钥**：创建、列出、查看和删除自己的实验。
-- **实验密钥**：只允许上报对应实验的事件，适合放在实验脚本中。
-
-### 创建实验
-
-用账号密钥调用 POST /v1/tasks：
+直接创建：POST /v1/quick/tasks，无需鉴权，Content-Type: application/json：
 
 ~~~json
 {
+  "email": "you@example.com",
   "name": "模型训练",
+  "notify_on": ["succeeded", "failed", "heartbeat_timeout"],
   "heartbeat_timeout": 300,
-  "runtime_timeout": 7200,
-  "notify_on": ["succeeded", "failed", "heartbeat_timeout", "runtime_timeout"],
-  "rules": [{"metric": "loss", "op": "lt", "value": 0.01}]
+  "runtime_timeout": null,
+  "rules": []
 }
 ~~~
 
-返回示例：
+返回 id、task_key、status。客户端自动保存 task_key；自写 HTTP 客户端需要私下保存它，并在当前任务的请求中发送 Authorization: Bearer TASK_KEY。
 
-~~~json
-{
-  "id": "0123456789abcdef0123456789abcdef",
-  "task_key": "en_task_YOUR_TASK_KEY",
-  "status": "running",
-  "heartbeat_timeout": 300
-}
-~~~
-
-请保存实验 ID 和实验密钥；密钥只在创建时返回。**创建后立即开始计时**，请及时接入心跳。
-
-### 上报状态、心跳和指标
-
-用对应实验密钥调用 POST /v1/tasks/{id}/events。
-
-心跳：
-
-~~~json
-{"event_id": "heartbeat-001", "type": "heartbeat"}
-~~~
-
-指标：
-
-~~~json
-{
-  "event_id": "epoch-010",
-  "type": "metric",
-  "message": "第 10 轮训练完成",
-  "metrics": {"epoch": 10, "loss": 0.005}
-}
-~~~
-
-成功结束：
-
-~~~json
-{"event_id": "finished-001", "type": "succeeded", "message": "训练完成"}
-~~~
-
-失败结束时将 type 换成 failed；取消时使用 cancelled。取消会结束监控，默认不发邮件。
-
-任何有效的新事件都会更新心跳。成功、失败或取消后，实验不能恢复为运行状态；重跑请创建新实验。
-
-**同一事件重试时沿用原 event_id，不同事件使用不同 ID。** 服务保留每个实验最近 1000 个事件 ID，识别到重试后不会再次触发通知。重试不更新心跳。
-
-### 接口列表
-
-| 方法与路径 | 鉴权 | 用途 |
-| --- | --- | --- |
-| POST /v1/auth/request | 无 | 提交 email，请求验证码 |
-| POST /v1/auth/verify | 无 | 提交 email、code，领取账号 api_key |
-| POST /v1/auth/rotate | 账号密钥 | 替换账号密钥，旧账号密钥立即失效 |
-| POST /v1/tasks | 账号密钥 | 创建实验 |
-| GET /v1/tasks | 账号密钥 | 列出自己的实验 |
-| GET /v1/tasks/{id} | 账号密钥 | 查看实验条件、指标和通知状态 |
-| DELETE /v1/tasks/{id} | 账号密钥 | 删除实验与待发通知，撤销实验密钥 |
-| POST /v1/tasks/{id}/events | 对应实验密钥或账号密钥 | 上报事件 |
-| GET /health | 无 | 查看服务健康状态 |
-
-常见错误：
-
-| HTTP 状态 | 含义与处理 |
+| 方法与路径 | 用途 |
 | --- | --- |
-| 400 | 参数、验证码或事件格式不正确 |
-| 401 / 403 | 密钥无效、权限不足或请求来自不允许的网页来源 |
-| 404 | 实验不存在，或不属于当前账号 |
-| 409 | 实验已经结束，不能继续上报新事件 |
-| 413 | 请求体超过 16 KiB |
-| 429 | 达到限额，稍后再试 |
-| 503 | 注册暂时关闭或服务暂不可用 |
+| POST /v1/quick/tasks | 按邮箱直接创建提醒，无需验证 |
+| POST /v1/tasks/{id}/events | 上报当前任务事件 |
+| GET /v1/tasks/{id} | 查看当前任务条件、状态、通知 |
+| DELETE /v1/tasks/{id} | 删除当前任务及待发通知 |
+| GET /health | 查看服务健康状态 |
 
-API 不开放跨域浏览器调用。Python、命令行或自己的后端可以直接接入。
+事件示例：
 
-## 查看通知是否发出
+~~~json
+{"event_id":"heartbeat-001","type":"heartbeat"}
+{"event_id":"epoch-001","type":"metric","metrics":{"loss":0.005}}
+{"event_id":"finished-001","type":"succeeded"}
+~~~
 
-网页中的实验详情，或 GET /v1/tasks/{id}，会显示通知记录：
+失败用 failed，取消用 cancelled。不同事件使用不同 event_id，重试沿用原 ID。结束后不能恢复运行，重跑需要新任务。不同任务访问凭据隔离，即使邮箱相同也不能访问其他任务。
 
-| 状态 | 含义 |
-| --- | --- |
-| pending | 等待发送或等待重试 |
-| sent | 邮件服务器已接受 |
-| dead | 重试耗尽，未确认成功发送 |
-| expired | 验证邮件已过期 |
-| cancelled | 验证通知已被替换或取消 |
+heartbeat_timeout 为 30–86400 秒，runtime_timeout 为 30–2592000 秒或 null。notify_on 支持 succeeded、failed、heartbeat_timeout、runtime_timeout；指标规则独立设置。公开任务名称仅允许文字、数字、空格、括号和连字符，最多 60 字符；指标名称使用字母、数字和下划线，不以数字开头。
 
-队列暂满时，触发内容仍会持久保存，任务详情中的 deferred_notifications 可查看尚待入队的提醒。达到邮件发送配额后，待发通知会延后。
+HTTP 400 表示参数不正确，401/403 表示凭据无效、邮箱已屏蔽或网页来源不允许，404 表示任务不可访问，409 表示已结束，429 表示达到限额。请求体最多 16 KiB，不开放跨域浏览器调用。
 
-sent 不代表邮件一定进入收件箱。没有收到时，请检查垃圾邮件目录，再查看通知状态。极少数情况下，发送后的重试可能产生重复邮件。
+已有账号的 /v1/tasks、账号管理接口仍保留兼容；直接使用流程不需要它们。
 
-## 使用限制与隐私
+## 限制、隐私与资源
 
-公开服务当前默认限额：
+公开直接使用：每邮箱每天最多创建 3 个任务、尝试发送 3 封邮件，每 IP 每小时最多创建 3 个任务；首次测试和失败重试也计入发送次数。使用固定邮件模板，不接受任意邮件正文或发件人。全站还有创建、发信和队列上限。
 
-- 每个账号同时运行最多 20 个实验，总计保留最多 200 个。
-- 每个账号每天最多 30 次邮件发送尝试，全站每天最多 300 次；失败重试也计入次数。
-- 每个邮箱每小时最多请求 3 次验证码，每个 IP 每小时最多 5 次。
-- 成功或失败时各提醒一次；运行超时提醒一次；每条指标规则命中后提醒一次。
-- 每次失联提醒一次，新心跳恢复后重新布防；两次失联提醒至少间隔 15 分钟。
-- 已结束的实验和通知记录保留 30 天；仍在运行的实验请主动结束或删除。
+心跳正常时不发邮件。成功、失败和运行超时各提醒一次；失联恢复后可重新布防，两次失联提醒至少间隔 15 分钟。已结束的任务和通知保留 30 天。不要在任务名称和指标中提交秘密或敏感数据。
 
-提交的实验名称、说明和指标会用于保存状态及生成邮件，请勿包含密码、访问令牌或未经授权的个人信息。账号之间的实验隔离，实验密钥不能读取其他实验。
+通知状态 pending 表示待发，sent 表示 SMTP 已接受，dead 表示重试耗尽，blocked 表示被屏蔽。sent 不保证进入收件箱，请检查垃圾邮件。达到发送限额时可能延后。
 
-endnote 是提醒服务，**不会替你执行、终止、恢复或自动重启实验**。实验程序、网络或提醒服务发生故障时，通知可能延迟；提醒服务本身不可用时，要依赖独立的外部监控来及时发现。
+服务使用 Python 标准库和 SQLite，不使用 GPU，不为每个任务启动独立进程。endnote 负责提醒，不负责恢复实验；服务本身或网络故障时，通知可能延迟。同一机器同时运行实验与提醒服务时，整机掉线需要独立外部监控。
 
-## Codex 技能
+## Codex 技能与自行部署
 
-把仓库中的 [skills/endnote](skills/endnote) 复制到自己的 ~/.codex/skills/endnote，即可使用 $endnote 为实验接入提醒。
+将 [skills/endnote](skills/endnote) 复制到 ~/.codex/skills/endnote，使用 $endnote 接入提醒。已授权的本机邮箱自动复用。
 
-技能使用同一套公开 API，不需要服务器登录权限。
-
-## 自行部署与参与开发
-
-希望自行托管服务，请阅读 [部署文档](deploy/README.md)。运行时需要 Python 3.10+ 和自己的 SMTP 配置。
-
-开发检查：
+自行托管请看 [部署文档](deploy/README.md)。开发检查：
 
 ~~~bash
 python -m unittest discover -s tests -v
 ~~~
 
-项目采用 [MIT 许可证](LICENSE)。
+[MIT 许可证](LICENSE)。

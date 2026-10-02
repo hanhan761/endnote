@@ -69,6 +69,8 @@ class Store:
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY,email TEXT UNIQUE NOT NULL,key_hash TEXT UNIQUE NOT NULL,created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS mail_preferences(recipient_hash TEXT PRIMARY KEY,token TEXT UNIQUE NOT NULL,blocked INTEGER NOT NULL DEFAULT 0,created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS guest_accounts(id TEXT PRIMARY KEY REFERENCES accounts(id),recipient TEXT NOT NULL,created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS challenges(email TEXT PRIMARY KEY,token_hash TEXT NOT NULL,expires REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,owner TEXT NOT NULL REFERENCES accounts(id),key_hash TEXT UNIQUE NOT NULL,name TEXT NOT NULL,status TEXT NOT NULL,created REAL NOT NULL,heartbeat REAL NOT NULL,heartbeat_seq INTEGER NOT NULL DEFAULT 0,config TEXT NOT NULL,message TEXT NOT NULL DEFAULT '',metrics TEXT NOT NULL DEFAULT '{}',finished REAL);
             CREATE INDEX IF NOT EXISTS task_owner ON tasks(owner,created);
@@ -84,6 +86,7 @@ class Store:
     def db(self):
         c=sqlite3.connect(self.settings.database,timeout=5,isolation_level=None)
         c.row_factory=sqlite3.Row
+        c.create_function("recipient_hash",1,lambda value:digest(value.lower()),deterministic=True)
         c.execute("PRAGMA foreign_keys=ON")
         c.execute("PRAGMA synchronous=FULL")
         try:
@@ -120,11 +123,29 @@ class Store:
                 return None,task
         raise APIError(401,"invalid API key")
 
+    def blocked(self,c,address):
+        row=c.execute('SELECT blocked FROM mail_preferences WHERE recipient_hash=?',(digest(address.lower()),)).fetchone()
+        return bool(row and row[0])
+
+    def unsubscribe(self,token):
+        if not isinstance(token,str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}',token):raise APIError(404,'link not found')
+        with self.db() as c:
+            row=c.execute('SELECT recipient_hash FROM mail_preferences WHERE token=?',(token,)).fetchone()
+            if not row:raise APIError(404,'link not found')
+            target=row[0]
+            c.execute('UPDATE mail_preferences SET blocked=1 WHERE recipient_hash=?',(target,))
+            c.execute("UPDATE notices SET state='blocked',body='' WHERE recipient_hash(recipient)=? AND state='pending'",(target,))
+            c.execute('DELETE FROM deferred WHERE recipient_hash(recipient)=?',(target,))
+            c.execute('DELETE FROM challenges WHERE recipient_hash(email)=?',(target,))
+            c.execute("UPDATE tasks SET status='cancelled',finished=? WHERE status='running' AND owner IN (SELECT a.id FROM accounts a LEFT JOIN guest_accounts g ON g.id=a.id WHERE recipient_hash(COALESCE(g.recipient,a.email))=?)",(self.clock(),target))
+        return {'ok':True,'blocked':True}
+
     def request_verification(self,address,ip):
         address=email(address)
         if not self.settings.signup_enabled or not self.settings.mail_enabled:
             raise APIError(503,"registration temporarily disabled")
         with self.db() as c:
+            if self.blocked(c,address):raise APIError(403,'此邮箱已停止接收通知')
             self.limit(c,'verify-ip:'+digest(ip),5,3600)
             self.limit(c,'verify-email:'+digest(address),3,3600)
             self.limit(c,'verify-global',self.settings.verification_per_day)
@@ -191,6 +212,7 @@ class Store:
         name,config=self.validate_config(data)
         with self.db() as c:
             account,_=self.auth(c,key)
+            if self.blocked(c,account["email"]):raise APIError(403,"此邮箱已停止接收通知")
             self.limit(c,'create:'+account['id'],100)
             if c.execute("SELECT count(*) FROM tasks WHERE owner=? AND status='running'",(account['id'],)).fetchone()[0]>=20: raise APIError(429,"at most 20 running tasks")
             if c.execute("SELECT count(*) FROM tasks WHERE owner=?",(account['id'],)).fetchone()[0]>=200: raise APIError(429,"delete old tasks before creating more")
@@ -200,6 +222,33 @@ class Store:
             now=self.clock()
             c.execute("INSERT INTO tasks(id,owner,key_hash,name,status,created,heartbeat,config) VALUES(?,?,?,?,?,?,?,?)",(task_id,account['id'],digest(task_key),name,'running',now,now,json.dumps(config)))
         return {'id':task_id,'task_key':task_key,'status':'running','heartbeat_timeout':config['heartbeat_timeout']}
+
+    def quick_task(self,data,ip):
+        if not self.settings.signup_enabled or not self.settings.mail_enabled:raise APIError(503,'service temporarily unavailable')
+        address=email(data.get('email'))
+        allowed={k:data[k] for k in ['name','notify_on','heartbeat_timeout','runtime_timeout','rules'] if k in data}
+        allowed['subject']='[endnote] $name · $reason'
+        allowed['body']='任务：$name\n状态：$status\n触发条件：$reason\n指标：$metrics\n时间：$time'
+        name,config=self.validate_config(allowed)
+        if any(not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}',r['metric']) for r in config['rules']):raise APIError(400,'快捷入口指标名只能使用字母、数字和下划线')
+        if not re.fullmatch(r'[\w\u4e00-\u9fff ()（）-]{1,60}',name):
+            raise APIError(400,'任务名限 60 个字母、汉字、数字、空格或括号，不支持链接')
+        with self.db() as c:
+            if self.blocked(c,address):raise APIError(403,'此邮箱已停止接收通知')
+            self.limit(c,'quick-ip:'+digest(ip),3,3600)
+            self.limit(c,'quick-recipient:'+digest(address),3)
+            self.limit(c,'quick-global',100)
+            if c.execute('SELECT count(*) FROM accounts').fetchone()[0]>=self.settings.max_accounts:raise APIError(503,'service capacity reached')
+            owner=secrets.token_hex(16);task_id=secrets.token_hex(16)
+            task_key='en_task_'+secrets.token_urlsafe(32);now=self.clock()
+            # Separate scopes for every task, including tasks using the same address.
+            c.execute('INSERT INTO accounts VALUES(?,?,?,?)',(owner,owner+'@guest.endnote.invalid',digest(secrets.token_urlsafe(32)),now))
+            c.execute('INSERT INTO guest_accounts VALUES(?,?,?)',(owner,address,now))
+            c.execute('INSERT INTO tasks(id,owner,key_hash,name,status,created,heartbeat,config) VALUES(?,?,?,?,?,?,?,?)',(task_id,owner,digest(task_key),name,'running',now,now,json.dumps(config)))
+            if not c.execute("SELECT 1 FROM notices WHERE recipient=? AND kind='binding'",(address,)).fetchone():
+                self.queue(c,owner,None,address,'[endnote] 提醒已创建',
+                           '这是 endnote 的首次接入测试邮件。有人为这个地址创建了实验提醒。\n\n以后任务完成、失败或满足已选条件时，将向这个地址发送通知。正常心跳不会定时发邮件。\n\n若非你本人操作，可忽略；公开入口限制同一邮箱每天最多 3 次发送尝试。','binding')
+        return {'id':task_id,'task_key':task_key,'status':'running','heartbeat_timeout':config['heartbeat_timeout'],'notify_on':config['notify_on']}
 
     def rotate(self,key):
         with self.db() as c:
@@ -216,7 +265,7 @@ class Store:
     def task_detail(self,key,task_id):
         with self.db() as c:
             account,task=self.auth(c,key,task_id)
-            if not account: raise APIError(403,"account key required")
+            if not account and not c.execute("SELECT 1 FROM guest_accounts WHERE id=?",(task["owner"],)).fetchone(): raise APIError(403,"account key required")
             item={k:task[k] for k in ['id','name','status','created','heartbeat','message','finished']}
             item['metrics']=json.loads(task['metrics']); item['config']=json.loads(task['config'])
             item['notifications']=[dict(x) for x in c.execute("SELECT id,kind,state,attempts,created,sent,error FROM notices WHERE task=? ORDER BY created DESC LIMIT 50",(task_id,))]
@@ -226,7 +275,7 @@ class Store:
     def delete_task(self,key,task_id):
         with self.db() as c:
             account,task=self.auth(c,key,task_id)
-            if not account: raise APIError(403,"account key required")
+            if not account and not c.execute("SELECT 1 FROM guest_accounts WHERE id=?",(task["owner"],)).fetchone(): raise APIError(403,"account key required")
             c.execute("DELETE FROM tasks WHERE id=?",(task_id,))
         return {'ok':True}
 
@@ -242,6 +291,9 @@ class Store:
             number(v,-1e100,1e100,'metric value')
         with self.db() as c:
             _,task=self.auth(c,key,task_id)
+            if c.execute('SELECT 1 FROM guest_accounts WHERE id=?',(task['owner'],)).fetchone():
+                if any(not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}',k) for k in metrics):raise APIError(400,'invalid quick-entry metric name')
+                message=''
             if c.execute("SELECT 1 FROM events WHERE task=? AND event_id=?",(task_id,event_id)).fetchone(): return {'ok':True,'duplicate':True,'status':task['status']}
             if task['status'] in TERMINAL: raise APIError(409,"task has already ended")
             now=self.clock()
@@ -260,6 +312,16 @@ class Store:
             return {'ok':True,'duplicate':False,'status':status}
 
     def queue(self,c,owner,task,recipient,subject,body,kind,expires=None):
+        target=digest(recipient.lower())
+        preference=c.execute('SELECT token,blocked FROM mail_preferences WHERE recipient_hash=?',(target,)).fetchone()
+        if preference and preference['blocked']:raise APIError(403,'此邮箱已停止接收通知')
+        if not preference:
+            token=secrets.token_urlsafe(32)
+            c.execute('INSERT INTO mail_preferences VALUES(?,?,0,?)',(target,token,self.clock()))
+        else:token=preference['token']
+        # A recipient-held revocation link; never returned through the task API.
+        footer='\n\n停止接收并屏蔽此邮箱（点击后取消待发邮件并停止相关提醒）：\n'+self.settings.public_url+'/unsubscribe/'+token
+        body=body+footer
         if c.execute("SELECT count(*) FROM notices WHERE state='pending'").fetchone()[0]>=2000: raise APIError(429,"mail queue capacity reached")
         now=self.clock()
         c.execute("INSERT INTO notices(id,owner,task,recipient,subject,body,kind,next_at,created,expires) VALUES(?,?,?,?,?,?,?,?,?,?)",(secrets.token_hex(16),owner,task,recipient,subject,body,kind,now,now,expires))
@@ -267,7 +329,8 @@ class Store:
     def trigger(self,c,task,identity,reason):
         if c.execute("SELECT 1 FROM triggers WHERE task=? AND reason=?",(task['id'],identity)).fetchone(): return False
         config=json.loads(task['config'])
-        recipient=c.execute("SELECT email FROM accounts WHERE id=?",(task['owner'],)).fetchone()[0]
+        recipient=c.execute("SELECT COALESCE(g.recipient,a.email) FROM accounts a LEFT JOIN guest_accounts g ON g.id=a.id WHERE a.id=?",(task['owner'],)).fetchone()[0]
+        if self.blocked(c,recipient):return False
         fields=dict(name=task['name'],status=task['status'],reason=reason,message=task['message'],metrics=task['metrics'],time=time.strftime('%Y-%m-%d %H:%M:%S UTC',time.gmtime(self.clock())))
         subject=Template(config['subject']).safe_substitute(fields).replace('\n',' ').replace('\r',' ')[:200]
         body=Template(config['body']).safe_substitute(fields)[:10000]
@@ -309,6 +372,10 @@ class Store:
             c.execute("UPDATE notices SET state='expired',body='' WHERE state='pending' AND expires IS NOT NULL AND expires<?",(now,))
             c.execute("DELETE FROM notices WHERE created<? AND state!='pending'",(now-30*86400,))
             c.execute("DELETE FROM tasks WHERE finished IS NOT NULL AND finished<?",(now-30*86400,))
+            for row in c.execute("SELECT id FROM guest_accounts WHERE created<? AND id NOT IN (SELECT owner FROM tasks)",(now-30*86400,)).fetchall():
+                c.execute("DELETE FROM notices WHERE owner=?",(row[0],))
+                c.execute("DELETE FROM guest_accounts WHERE id=?",(row[0],))
+                c.execute("DELETE FROM accounts WHERE id=?",(row[0],))
         self.worker_last=now
 
     def deliver_one(self):
@@ -316,6 +383,9 @@ class Store:
         with self.db() as c:
             row=c.execute("SELECT * FROM notices WHERE state='pending' AND next_at<=? ORDER BY created LIMIT 1",(self.clock(),)).fetchone()
             if not row: return False
+            if self.blocked(c,row['recipient']):
+                c.execute("UPDATE notices SET state='blocked',body='' WHERE id=?",(row['id'],))
+                return True
             if row['expires'] and row['expires']<self.clock():
                 c.execute("UPDATE notices SET state='expired',body='' WHERE id=?",(row['id'],))
                 return True
@@ -324,6 +394,8 @@ class Store:
             with self.db() as c:
                 self.limit(c,'mail-global',self.settings.mail_per_day)
                 if row['owner']: self.limit(c,'mail-user:'+row['owner'],self.settings.mail_per_user_day)
+                if c.execute('SELECT 1 FROM guest_accounts WHERE id=?',(row['owner'],)).fetchone():
+                    self.limit(c,'guest-mail-recipient:'+digest(row['recipient']),3)
         except APIError:
             with self.db() as c:
                 c.execute("UPDATE notices SET next_at=? WHERE id=?",(self.clock()+60,row['id']))
@@ -346,6 +418,10 @@ def smtp_sender(config):
         msg=EmailMessage()
         msg['From']=config['SMTP_FROM']; msg['To']=recipient; msg['Subject']=subject
         msg['Message-ID']=f"<{notice_id}@endnote.local>"
+        links=re.findall(r'https?://[^\s]+/unsubscribe/[A-Za-z0-9_-]{43}',body)
+        if links:
+            msg['List-Unsubscribe']='<'+links[-1]+'>'
+            msg['List-Unsubscribe-Post']='List-Unsubscribe=One-Click'
         msg.set_content(body+'\n\n— endnote · experiment notifications')
         context=ssl.create_default_context()
         use_ssl=str(config.get('SMTP_USE_SSL','true')).lower() in {'true','1','yes'}

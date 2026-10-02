@@ -60,7 +60,14 @@ class Experiment:
         self.task=None
         self.thread=None
     def __enter__(self):
-        self.task=self.client.request("/v1/tasks",dict(name=self.name,heartbeat_timeout=self.timeout,**self.config))
+        payload=dict(name=self.name,heartbeat_timeout=self.timeout,**self.config)
+        address=payload.pop("email",None)
+        route="/v1/tasks"
+        if not self.client.key or address:
+            payload["email"]=address or saved_email()
+            if not payload["email"]: raise ValueError("provide email or save a default email")
+            route="/v1/quick/tasks"
+        self.task=self.client.request(route,payload,key="" if route=="/v1/quick/tasks" else None)
         self.thread=threading.Thread(target=self._heartbeat,daemon=True)
         self.thread.start()
         return self
@@ -106,7 +113,7 @@ def main():
     p=sub.add_parser("request-code"); p.add_argument("--email")
     p=sub.add_parser("verify"); p.add_argument("--email")
     p=sub.add_parser("list")
-    p=sub.add_parser("run"); p.add_argument("--name",required=True); p.add_argument("--heartbeat-timeout",type=int,default=300); p.add_argument("--heartbeat-interval",type=int,default=60); p.add_argument("--runtime-timeout",type=int); p.add_argument("--rules",help="JSON file of metric rules"); p.add_argument("command",nargs=argparse.REMAINDER)
+    p=sub.add_parser("run"); p.add_argument("--email"); p.add_argument("--name",required=True); p.add_argument("--heartbeat-timeout",type=int,default=300); p.add_argument("--heartbeat-interval",type=int,default=60); p.add_argument("--runtime-timeout",type=int); p.add_argument("--rules",help="JSON file of metric rules"); p.add_argument("command",nargs=argparse.REMAINDER)
     p=sub.add_parser("event"); p.add_argument("--task",required=True); p.add_argument("--type",required=True,choices=["heartbeat","metric","succeeded","failed","cancelled"]); p.add_argument("--metrics",default="{}"); p.add_argument("--message",default="")
     args=parser.parse_args()
     client=Client(args.url)
@@ -138,6 +145,7 @@ def main():
         if command and command[0]=="--": command=command[1:]
         if not command: parser.error("command required after --")
         config={}
+        if args.email: config["email"]=args.email
         if args.runtime_timeout: config["runtime_timeout"]=args.runtime_timeout
         if args.rules:
             from pathlib import Path

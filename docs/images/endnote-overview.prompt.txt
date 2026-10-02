@@ -17,3 +17,4 @@ Condition tiles: "完成", "失败", "心跳失联", "运行超时", "指标阈�
 Security strip labels: "邮箱验证", "独立实验密钥", "限流与持久化重试"
 Footer small label: "提醒系统 · 不执行或自动重启实验"
 Constraints: accurate product claims only. No logos from other companies, no physical GPU/server picture needed, no emails, URLs, credentials, random code, watermark or decorative pseudo-text. Use coherent simple icons for heartbeat, clock, threshold graph, completion check, failure cross. Show restrained directional connectors, no extra unexplained arrows. Chinese text must be exactly as supplied. Opaque background.
+2026-10-02 edit: replace 邮箱验证 with 一键屏蔽; replace 独立实验密钥 with 填邮箱直接用 and person icon; replace 自定义邮件内容 with 条件触发邮件提醒. Preserve layout and five conditions.

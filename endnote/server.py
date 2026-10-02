@@ -69,6 +69,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(308); self.send_header("Location",prefix+"/"); self.send_header("Content-Length","0"); self.end_headers(); return
             if prefix and not target.startswith(prefix+"/"): raise APIError(404,"not found")
             route=target[len(prefix):] if prefix else target
+            unsub=re.fullmatch(r"/unsubscribe/([A-Za-z0-9_-]{43})",route)
+            if unsub and self.command in {"GET","POST"}:
+                self.server.store.unsubscribe(unsub.group(1))
+                return self.reply(200,(STATIC/"blocked.html").read_bytes(),"text/html; charset=utf-8")
             origin=self.headers.get("Origin")
             allowed=urlsplit(self.server.store.settings.public_url)
             if origin and origin!=f"{allowed.scheme}://{allowed.netloc}":
@@ -76,9 +80,9 @@ class Handler(BaseHTTPRequestHandler):
             if route=="/health" and self.command in {"GET","HEAD"}:
                 healthy=time.time()-self.server.store.worker_last<90
                 return self.reply(200 if healthy else 503,{"ok":healthy,"mail_enabled":self.server.store.settings.mail_enabled,"signup_enabled":self.server.store.settings.signup_enabled})
-            if route in {"/","/app.js","/style.css"} and self.command in {"GET","HEAD"}:
-                name={"/":"index.html","/app.js":"app.js","/style.css":"style.css"}[route]
-                mime={"index.html":"text/html; charset=utf-8","app.js":"text/javascript; charset=utf-8","style.css":"text/css; charset=utf-8"}[name]
+            if route in {"/","/app.js","/style.css","/runner.py"} and self.command in {"GET","HEAD"}:
+                name={"/":"index.html","/app.js":"app.js","/style.css":"style.css","/runner.py":"runner.py"}[route]
+                mime={"index.html":"text/html; charset=utf-8","app.js":"text/javascript; charset=utf-8","style.css":"text/css; charset=utf-8","runner.py":"text/plain; charset=utf-8"}[name]
                 return self.reply(200,(STATIC/name).read_bytes(),mime)
             ip=self.client_address[0]
             # Trust only the local cloudflared process; ignore caller-supplied forwarded-for.
@@ -102,7 +106,8 @@ class Handler(BaseHTTPRequestHandler):
             auth=self.headers.get("Authorization","")
             key=auth[7:] if auth.startswith("Bearer ") else ""
             store=self.server.store
-            if route=="/v1/auth/request" and self.command=="POST": result=store.request_verification(data.get("email"),ip)
+            if route=="/v1/quick/tasks" and self.command=="POST": return self.reply(201,store.quick_task(data,ip))
+            elif route=="/v1/auth/request" and self.command=="POST": result=store.request_verification(data.get("email"),ip)
             elif route=="/v1/auth/verify" and self.command=="POST": result=store.verify(data.get("email"),data.get("code"),ip)
             elif route=="/v1/auth/rotate" and self.command=="POST": result=store.rotate(key)
             elif route=="/v1/tasks" and self.command=="POST": return self.reply(201,store.create_task(key,data))

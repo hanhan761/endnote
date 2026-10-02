@@ -55,6 +55,70 @@ class Behavior(unittest.TestCase):
         self.signup("a@example.com","1.2.3.4")
         self.assertEqual(len([x for x in self.sent if x[1]=="[endnote] 邮箱绑定成功"]),1)
 
+    def test_owner_console_enrollment_hash_only_and_one_test_mail(self):
+        from scripts.enroll_owner import enroll_owner
+        from endnote.service import digest
+        key="en_account_owner_test_key"
+        result=enroll_owner(self.store,"owner@example.com",digest(key))
+        self.assertEqual(result["binding_test"],"queued")
+        self.assertEqual(self.store.list_tasks(key),{"tasks":[]})
+        result=enroll_owner(self.store,"owner@example.com",digest(key))
+        self.assertEqual(result["binding_test"],"already_requested")
+        with self.store.db() as c:
+            row=c.execute("SELECT key_hash FROM accounts WHERE email='owner@example.com'").fetchone()
+            self.assertEqual(row[0],digest(key))
+            self.assertEqual(c.execute("SELECT count(*) FROM notices WHERE owner=? AND kind='binding'",(result["account_id"],)).fetchone()[0],1)
+        with self.assertRaises(ValueError):enroll_owner(self.store,"owner@example.com",key)
+
+    def test_quick_entry_no_verification_and_isolated_same_recipient(self):
+        one=self.store.quick_task({"email":"quick@example.com","name":"实验一"},"2.2.2.2")
+        two=self.store.quick_task({"email":"quick@example.com","name":"实验二"},"3.3.3.3")
+        self.assertEqual(self.store.task_detail(one["task_key"],one["id"])["name"],"实验一")
+        with self.assertRaises(APIError):self.store.task_detail(one["task_key"],two["id"])
+        self.event(one,"succeeded")
+        with self.store.db() as c:
+            notice=c.execute("SELECT recipient,body FROM notices WHERE task=?",(one["id"],)).fetchone()
+            self.assertEqual(notice[0],"quick@example.com")
+            self.assertIn("/unsubscribe/",notice[1])
+            self.assertNotIn("quick@example.com",notice[1])
+        self.store.delete_task(two["task_key"],two["id"])
+        with self.assertRaises(APIError):self.store.task_detail(two["task_key"],two["id"])
+
+    def test_blacklist_stops_all_tasks_and_future_mail(self):
+        owner_task=self.task()
+        guest=self.store.quick_task({"email":"a@example.com","name":"公开实验"},"2.2.2.2")
+        self.event(owner_task,"metric",metrics={"loss":.5})
+        with self.store.db() as c:
+            token=c.execute("SELECT token FROM mail_preferences LIMIT 1").fetchone()[0]
+            self.store.queue(c,None,None,"a@example.com","test","test","test")
+        self.assertTrue(self.store.unsubscribe(token)["blocked"])
+        self.assertTrue(self.store.unsubscribe(token)["blocked"])
+        self.assertEqual(self.store.task_detail(self.key,owner_task["id"])["status"],"cancelled")
+        self.assertEqual(self.store.task_detail(guest["task_key"],guest["id"])["status"],"cancelled")
+        with self.store.db() as c:
+            self.assertEqual(c.execute("SELECT count(*) FROM notices WHERE state='pending'").fetchone()[0],0)
+        for action in [lambda:self.store.quick_task({"email":"A@EXAMPLE.COM","name":"test"},"9.9.9.9"),lambda:self.task(),lambda:self.store.request_verification("a@example.com","1.1.1.1")]:
+            with self.assertRaises(APIError) as e:action()
+            self.assertEqual(e.exception.status,403)
+        with self.assertRaises(APIError):self.store.unsubscribe("bad-token")
+
+    def test_guest_limits_fixed_content_and_recipient_budget(self):
+        task=self.store.quick_task({"email":"quick@example.com","name":"实验","subject":"ignored","body":"ignored"},"2.2.2.2")
+        detail=self.store.task_detail(task["task_key"],task["id"])
+        self.assertNotEqual(detail["config"]["subject"],"ignored")
+        with self.assertRaises(APIError):self.store.quick_task({"email":"other@example.com","name":"https://spam.example"},"2.2.2.2")
+        for i in range(2):self.store.quick_task({"email":"quick@example.com","name":"实验"},"2.2.2.2")
+        with self.assertRaises(APIError) as e:self.store.quick_task({"email":"quick@example.com","name":"实验"},"2.2.2.2")
+        self.assertEqual(e.exception.status,429)
+        for i in range(4):
+            with self.store.db() as c:self.store.queue(c,None,None,"quick@example.com","x","x","test")
+        # Recipient quota applies to every quick-entry notice, not just per-task owners.
+        with self.store.db() as c:
+            owner=c.execute("SELECT owner FROM tasks WHERE id=?",(task["id"],)).fetchone()[0]
+            c.execute("UPDATE notices SET owner=? WHERE recipient='quick@example.com'",(owner,))
+        for _ in range(5):self.store.deliver_one()
+        self.assertEqual(len([x for x in self.sent if x[0]=="quick@example.com"]),3)
+
     def test_signup_limits_prevent_repeated_mail(self):
         for _ in range(2): self.store.request_verification("a@example.com","1.2.3.4")
         with self.assertRaises(APIError) as e: self.store.request_verification("a@example.com","1.2.3.4")
@@ -178,6 +242,18 @@ class Behavior(unittest.TestCase):
             self.assertEqual(call("/v1/tasks")[0],401)
             self.assertEqual(call("/v1/auth/request",{"email":"a@example.com"},{"Content-Type":"application/json","Origin":"https://evil.example"})[0],403)
             self.assertEqual(call("/v1/tasks",{"name":"x"*20000},{"Content-Type":"application/json"})[0],413)
+            status,payload=call("/v1/quick/tasks",{"email":"httpquick@example.com","name":"HTTP测试"},{"Content-Type":"application/json"})
+            self.assertEqual(status,201,payload)
+            quick=json.loads(payload)
+            self.assertEqual(call("/v1/tasks/"+quick["id"],headers={"Authorization":"Bearer "+quick["task_key"]})[0],200)
+            with self.store.db() as c:
+                token=c.execute("SELECT token FROM mail_preferences WHERE recipient_hash=?",(__import__('endnote.service',fromlist=['digest']).digest("httpquick@example.com"),)).fetchone()[0]
+            self.assertEqual(call("/unsubscribe/"+token)[0],200)
+            self.assertEqual(call("/v1/quick/tasks",{"email":"httpquick@example.com","name":"HTTP测试"},{"Content-Type":"application/json"})[0],403)
+            public=Client(base)
+            with public.experiment("SDK直接使用",email="sdkquick@example.com",heartbeat_timeout=30,heartbeat_interval=5) as public_exp:
+                public_exp.metric(loss=.005)
+            self.assertEqual(public.request("/v1/tasks/"+public_exp.task["id"],key=public_exp.task["task_key"])["status"],"succeeded")
             client=Client(base,self.key)
             with client.experiment("python",heartbeat_timeout=30,heartbeat_interval=5) as exp:
                 exp.metric(loss=.005)
