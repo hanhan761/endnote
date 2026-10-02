@@ -36,7 +36,7 @@ class Client:
                     self.key=config.get("api_key", "")
     def request(self,route,data=None,key=None,method=None,retries=0):
         payload=json.dumps(data,allow_nan=False).encode() if data is not None else None
-        headers={"Content-Type":"application/json","Authorization":"Bearer "+(self.key if key is None else key)}
+        headers={"User-Agent":"endnote/0.1 (+https://github.com/hanhan761/endnote)","Content-Type":"application/json","Authorization":"Bearer "+(self.key if key is None else key)}
         for attempt in range(retries+1):
             req=Request(self.url+route,payload,headers,method=method)
             try:
