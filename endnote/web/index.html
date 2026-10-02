@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>endnote · end 的时候 note 一下</title><link rel="stylesheet" href="./style.css"><script src="./app.js" defer></script></head>
+<body><main>
+<nav><a class="brand" href="./">endnote<span>●</span></a><a href="https://github.com/hanhan761/endnote" target="_blank" rel="noopener noreferrer">GitHub ↗</a></nav>
+<header><p class="eyebrow">END, THEN NOTE.</p><h1>让实验跑。<br><span>消息会来找你。</span></h1><p class="intro">完成、失败、失联，或指标达到你设定的条件。<br>一封邮件，让你不用反复查看实验。</p><div class="pills"><span>独立实验密钥</span><span>邮箱验证</span><span>持久化重试</span></div></header>
+<div id="notice" role="status" aria-live="polite"></div>
+<section class="grid">
+<article><div class="step">01 / 接收消息</div><h2>你的收件邮箱</h2><p>通知只发送到你验证过的邮箱。重新验证会替换账号密钥。</p>
+<label for="email">邮箱地址</label><input id="email" type="email" placeholder="you@example.com" autocomplete="email">
+<button id="request">发送验证码</button>
+<label for="code">邮件中的验证码</label><input id="code" type="password" autocomplete="off" placeholder="粘贴邮件中的完整验证码">
+<button id="verify" class="secondary">验证并领取密钥</button><label for="key">账号 API 密钥</label><input id="key" type="password" autocomplete="off" placeholder="en_account_…">
+<p class="small">密钥仅保留在当前页面内存；刷新前请安全保存。</p></article>
+<article><div class="step">02 / 设置条件</div><h2>跟踪一个实验</h2><label for="name">实验名称</label><input id="name" placeholder="模型训练 / 第一次实验">
+<div class="pair"><div><label for="heartbeat">失联多久提醒（秒）</label><input id="heartbeat" type="number" min="30" max="86400" value="300"></div><div><label for="runtime">运行超时（秒，可选）</label><input id="runtime" type="number" min="30" max="2592000" placeholder="3600"></div></div>
+<label for="rules">指标规则（JSON，可留空）</label><textarea id="rules" rows="3" placeholder='[{"metric":"loss","op":"lt","value":0.01}]'></textarea>
+<label for="subject">邮件标题</label><input id="subject" value="[endnote] $name · $reason">
+<label for="body">邮件正文</label><textarea id="body" rows="4">实验：$name
+状态：$status
+触发条件：$reason
+说明：$message
+指标：$metrics</textarea><p class="small">可用变量：$name · $status · $reason · $message · $metrics · $time</p><button id="create">创建实验</button></article>
+</section>
+<section class="result" id="result" hidden><div class="step">03 / 连接你的代码</div><h2>实验已创建</h2><p>保存这个实验密钥；它只能上报此实验。创建后即开始检测心跳，请及时接入。</p><pre id="credentials"></pre><p>向以下地址 POST JSON，以 Bearer 实验密钥鉴权：</p><pre id="endpoint"></pre><pre>{"event_id":"unique-id","type":"heartbeat"}</pre><p>结束时将 type 换成 succeeded / failed。指标上报示例：</p><pre>{"event_id":"another-id","type":"metric","metrics":{"loss":0.005}}</pre></section>
+<section class="tasks"><div class="sectionline"><h2>你的实验</h2><button id="refresh" class="secondary">刷新状态</button></div><div id="tasks"><p class="small">输入账号密钥后查看。</p></div><pre id="detail" hidden></pre></section>
+<section class="usage"><h2>用一行命令包住实验</h2><pre>python -m endnote.client run --name "train" -- python train.py</pre><p>先将账号密钥放入 ENDNOTE_API_KEY。SDK 会自动发送进程心跳与结束状态；指标规则需要你的代码主动上报指标。</p><p class="small">心跳证明上报进程仍在运行，无法单独判断训练是否卡住。请在训练循环上报进度指标。通知不是实验恢复系统；整机断网或关闭时需要独立外部监控。默认每账号每天 30 次发送尝试、20 个同时运行实验；达到邮件配额后待发送通知延后。SMTP 接受邮件不代表一定进入收件箱。</p></section>
+<footer>endnote · end 的时候 note 一下。<span id="health">正在连接服务…</span></footer>
+</main></body></html>

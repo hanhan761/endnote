@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.db*
+__pycache__/
+*.pyc
+.venv/
+state/
+dist/
+.local/
