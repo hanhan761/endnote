@@ -77,6 +77,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY,email TEXT UNIQUE NOT NULL,key_hash TEXT UNIQUE NOT NULL,created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS mail_preferences(recipient_hash TEXT PRIMARY KEY,token TEXT UNIQUE NOT NULL,blocked INTEGER NOT NULL DEFAULT 0,created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS dashboards(recipient_hash TEXT PRIMARY KEY,token TEXT UNIQUE NOT NULL,created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS dashboard_archives(recipient_hash TEXT NOT NULL,task TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,created REAL NOT NULL,PRIMARY KEY(recipient_hash,task));
             CREATE TABLE IF NOT EXISTS samples(task TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,bucket INTEGER NOT NULL,created REAL NOT NULL,metrics TEXT NOT NULL,PRIMARY KEY(task,bucket));
             CREATE TABLE IF NOT EXISTS guest_accounts(id TEXT PRIMARY KEY REFERENCES accounts(id),recipient TEXT NOT NULL,created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS challenges(email TEXT PRIMARY KEY,token_hash TEXT NOT NULL,expires REAL NOT NULL);
@@ -263,18 +264,44 @@ class Store:
                            '这是 endnote 的首次接入测试邮件。有人为这个地址创建了实验提醒。\n\n以后任务完成、失败或满足已选条件时，将向这个地址发送通知。正常心跳不会定时发邮件。\n\n若非你本人操作，可忽略；公开入口限制同一邮箱每天最多 3 次发送尝试。','binding')
         return {'id':task_id,'task_key':task_key,'status':'running','heartbeat_timeout':config['heartbeat_timeout'],'notify_on':config['notify_on']}
 
-    def dashboard(self,token,offset=0):
+    def dashboard(self,token,offset=0,archived=False,status="all",query="",trends=True,task_id=None):
+        if not isinstance(status,str) or status not in {"all","active","running","waiting","outage","succeeded","failed","cancelled","ended"}:raise APIError(400,"invalid status filter")
+        text(query,100,"search",empty=True)
+        if not isinstance(trends,bool):raise APIError(400,"invalid trend filter")
+        if task_id is not None and (not isinstance(task_id,str) or not re.fullmatch(r"[0-9a-f]{32}",task_id)):raise APIError(400,"invalid task id")
+        if not isinstance(archived,bool):raise APIError(400,"invalid archive filter")
         if isinstance(offset,bool) or not isinstance(offset,int) or not 0<=offset<=10000:raise APIError(400,"invalid page offset")
         if not isinstance(token,str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}',token):raise APIError(404,'dashboard not found')
         with self.db() as c:
             access=c.execute('SELECT recipient_hash FROM dashboards WHERE token=?',(token,)).fetchone()
             if not access:raise APIError(404,'dashboard not found')
-            self.limit(c,'dashboard:'+access[0],30,60)
+            self.limit(c,'dashboard:'+access[0],120,60)
         with self.db(read_only=True) as c:
-            scope="FROM tasks t JOIN accounts a ON a.id=t.owner LEFT JOIN guest_accounts g ON g.id=a.id WHERE recipient_hash(COALESCE(g.recipient,a.email))=?"
-            total=c.execute('SELECT count(*) '+scope,(access[0],)).fetchone()[0]
-            rows=c.execute('SELECT t.* '+scope+" ORDER BY (t.status='running') DESC,t.created DESC LIMIT 200 OFFSET ?",(access[0],offset)).fetchall()
-            result=[];now=self.clock()
+            scope="FROM tasks t WHERE t.owner IN (SELECT a.id FROM accounts a LEFT JOIN guest_accounts g ON g.id=a.id WHERE recipient_hash(COALESCE(g.recipient,a.email))=?)"
+            archive_clause=' AND '+('' if archived else 'NOT ')+"EXISTS (SELECT 1 FROM dashboard_archives d WHERE d.recipient_hash=? AND d.task=t.id)"
+            outage_sql="(t.status='running' AND EXISTS (SELECT 1 FROM json_each(t.config,'$.notify_on') WHERE value='heartbeat_timeout') AND ?-t.heartbeat>=json_extract(t.config,'$.heartbeat_timeout'))"
+            filter_clause='';filter_args=[]
+            if status=='outage':filter_clause+=' AND '+outage_sql;filter_args.append(self.clock())
+            elif status=='active':filter_clause+=" AND t.status='running' AND NOT "+outage_sql;filter_args.append(self.clock())
+            elif status in {'running','waiting'}:
+                filter_clause+=" AND t.status='running' AND t.heartbeat_seq"+('>0' if status=='running' else '=0')+' AND NOT '+outage_sql;filter_args.append(self.clock())
+            elif status=='ended':filter_clause+=" AND t.status IN ('succeeded','failed','cancelled')"
+            elif status!='all':filter_clause+=' AND t.status=?';filter_args.append(status)
+            if query:
+                value='%'+query.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%'
+                filter_clause+=" AND (t.name LIKE ? ESCAPE '\\' OR t.id LIKE ? ESCAPE '\\')";filter_args.extend([value,value])
+            if task_id is not None:filter_clause+=' AND t.id=?';filter_args.append(task_id)
+            row_args=[access[0],access[0],*filter_args]
+            total=c.execute('SELECT count(*) '+scope+archive_clause+filter_clause,row_args).fetchone()[0]
+            archived_count=c.execute('SELECT count(*) '+scope+" AND EXISTS (SELECT 1 FROM dashboard_archives d WHERE d.recipient_hash=? AND d.task=t.id)",(access[0],access[0])).fetchone()[0]
+            now=self.clock();summary={'running':0,'waiting':0,'outage':0,'succeeded':0,'failed':0,'cancelled':0}
+            for info in c.execute('SELECT t.status,t.heartbeat,t.heartbeat_seq,t.config '+scope+" AND NOT EXISTS (SELECT 1 FROM dashboard_archives d WHERE d.recipient_hash=? AND d.task=t.id)",(access[0],access[0])):
+                key=info['status'];cfg=json.loads(info['config'])
+                if key=='running':
+                    key='outage' if 'heartbeat_timeout' in cfg['notify_on'] and now-info['heartbeat']>=cfg['heartbeat_timeout'] else 'waiting' if info['heartbeat_seq']==0 else 'running'
+                summary[key]+=1
+            rows=c.execute('SELECT t.* '+scope+archive_clause+filter_clause+' ORDER BY '+outage_sql+" DESC,(t.status='running') DESC,t.created DESC LIMIT 200 OFFSET ?",[*row_args,now,offset]).fetchall()
+            result=[]
             for row in rows:
                 config=json.loads(row['config']);metrics=json.loads(row['metrics'])
                 item={k:row[k] for k in ['id','name','status','created','heartbeat','finished']}
@@ -285,13 +312,27 @@ class Store:
                 item['notifications']=[dict(x) for x in c.execute('SELECT kind,state,created FROM notices WHERE task=? ORDER BY created DESC,rowid DESC LIMIT 8',(row['id'],))]
                 metric=next((r['metric'] for r in config['rules'] if r['metric'] in metrics),'loss' if 'loss' in metrics else next(iter(metrics),None))
                 item['trend_metric']=metric
-                points=c.execute('SELECT created,metrics FROM samples WHERE task=? ORDER BY bucket DESC LIMIT 60',(row['id'],)).fetchall()
+                points=c.execute('SELECT created,metrics FROM samples WHERE task=? ORDER BY bucket DESC LIMIT 60',(row['id'],)).fetchall() if trends else []
                 item['trend']=[]
                 for p in reversed(points):
                     values=json.loads(p['metrics'])
                     if metric in values:item['trend'].append({'time':p['created'],'value':values[metric]})
                 result.append(item)
-            return {'tasks':result,'total':total,'offset':offset,'has_more':offset+len(result)<total,'now':now,'blocked':bool(c.execute('SELECT blocked FROM mail_preferences WHERE recipient_hash=?',(access[0],)).fetchone()[0])}
+            return {'tasks':result,'total':total,'offset':offset,'archived':archived,'archived_count':archived_count,'summary':summary,'has_more':offset+len(result)<total,'now':now,'blocked':bool(c.execute('SELECT blocked FROM mail_preferences WHERE recipient_hash=?',(access[0],)).fetchone()[0])}
+
+    def archive_dashboard_task(self,token,task_id,archived=True):
+        if not isinstance(token,str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}',token):raise APIError(404,'dashboard not found')
+        if not isinstance(task_id,str) or not re.fullmatch(r'[0-9a-f]{32}',task_id) or not isinstance(archived,bool):raise APIError(400,'invalid archive request')
+        with self.db() as c:
+            access=c.execute('SELECT recipient_hash FROM dashboards WHERE token=?',(token,)).fetchone()
+            if not access:raise APIError(404,'dashboard not found')
+            self.limit(c,'dashboard-archive:'+access[0],60,60)
+            task=c.execute('SELECT t.status FROM tasks t JOIN accounts a ON a.id=t.owner LEFT JOIN guest_accounts g ON g.id=a.id WHERE t.id=? AND recipient_hash(COALESCE(g.recipient,a.email))=?',(task_id,access[0])).fetchone()
+            if not task:raise APIError(404,'task not found')
+            if task['status'] not in TERMINAL:raise APIError(409,'只有已结束的任务可以归档')
+            if archived:c.execute('INSERT INTO dashboard_archives VALUES(?,?,?) ON CONFLICT DO NOTHING',(access[0],task_id,self.clock()))
+            else:c.execute('DELETE FROM dashboard_archives WHERE recipient_hash=? AND task=?',(access[0],task_id))
+        return {'ok':True,'archived':archived}
 
     def rotate(self,key):
         with self.db() as c:
@@ -371,7 +412,7 @@ class Store:
             dashboard_token=secrets.token_urlsafe(32)
             c.execute('INSERT INTO dashboards VALUES(?,?,?)',(target,dashboard_token,self.clock()))
         else:dashboard_token=dashboard['token']
-        footer='\n\n查看这个邮箱的全部任务进展（私有只读链接，请勿转发）：\n'+self.settings.public_url+'/dashboard/'+dashboard_token
+        footer='\n\n查看这个邮箱的全部任务进展（私有链接，可归档已结束任务，请勿转发）：\n'+self.settings.public_url+'/dashboard/'+dashboard_token
         footer+='\n\n停止接收并屏蔽此邮箱（点击后取消待发邮件并停止相关提醒）：\n'+self.settings.public_url+'/unsubscribe/'+token
         body=body+footer
         if c.execute("SELECT count(*) FROM notices WHERE state='pending'").fetchone()[0]>=2000: raise APIError(429,"mail queue capacity reached")

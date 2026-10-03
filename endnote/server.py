@@ -109,11 +109,18 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError,UnicodeDecodeError): raise APIError(400,"invalid JSON")
                 if not isinstance(data,dict): raise APIError(400,"JSON object required")
             dashboard=re.fullmatch(r'/v1/dashboard/([A-Za-z0-9_-]{43})',route)
+            dashboard_archive=re.fullmatch(r'/v1/dashboard/([A-Za-z0-9_-]{43})/archive',route)
+            if dashboard_archive and self.command=='POST':return self.reply(200,self.server.store.archive_dashboard_task(dashboard_archive.group(1),data.get('task_id'),data.get('archived',True)))
             dashboard_page=re.fullmatch(r'/dashboard/([A-Za-z0-9_-]{43})',route)
             if dashboard and self.command=='GET':
                 raw_offset=parse_qs(urlsplit(self.path).query).get('offset',['0'])[0]
                 if not re.fullmatch(r'[0-9]{1,5}',raw_offset):raise APIError(400,'invalid page offset')
-                return self.reply(200,self.server.store.dashboard(dashboard.group(1),int(raw_offset)))
+                archive_filter=parse_qs(urlsplit(self.path).query).get('archived',['0'])[0]
+                if archive_filter not in {'0','1'}:raise APIError(400,'invalid archive filter')
+                options=parse_qs(urlsplit(self.path).query)
+                trend_filter=options.get('trends',['1'])[0]
+                if trend_filter not in {'0','1'}:raise APIError(400,'invalid trend filter')
+                return self.reply(200,self.server.store.dashboard(dashboard.group(1),int(raw_offset),archive_filter=='1',options.get('status',['all'])[0],options.get('q',[''])[0],trend_filter=='1',options.get('task',[None])[0]))
             if dashboard_page and self.command in {'GET','HEAD'}:return self.reply(200,(STATIC/'dashboard.html').read_bytes(),'text/html; charset=utf-8')
             auth=self.headers.get("Authorization","")
             key=auth[7:] if auth.startswith("Bearer ") else ""

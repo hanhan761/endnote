@@ -148,6 +148,58 @@ class Behavior(unittest.TestCase):
         self.store.unsubscribe(block)
         self.assertTrue(self.store.dashboard(token)['blocked'])
 
+    def test_dashboard_archive_hides_ended_tasks_and_is_reversible(self):
+        task=self.store.create_task(self.key,{'name':'待归档实验'})
+        outsider=self.store.quick_task({'email':'outsider@example.com','name':'别人任务','notify_start':False},'6.6.6.6')
+        with self.store.db() as c:
+            body=c.execute("SELECT body FROM notices WHERE task=? AND kind='started'",(task['id'],)).fetchone()[0]
+        token=re.search(r'/dashboard/([A-Za-z0-9_-]{43})',body).group(1)
+        with self.assertRaises(APIError) as error:self.store.archive_dashboard_task(token,task['id'])
+        self.assertEqual(error.exception.status,409)
+        self.event(task,'succeeded')
+        self.store.archive_dashboard_task(token,task['id'])
+        self.store.archive_dashboard_task(token,task['id'])
+        visible=self.store.dashboard(token)
+        self.assertEqual(visible['total'],0);self.assertEqual(visible['archived_count'],1)
+        self.assertEqual(visible['summary']['succeeded'],0)
+        archived=self.store.dashboard(token,archived=True)
+        self.assertEqual(archived['tasks'][0]['id'],task['id'])
+        self.assertEqual(self.store.task_detail(self.key,task['id'])['status'],'succeeded')
+        with self.assertRaises(APIError) as error:self.store.archive_dashboard_task(token,outsider['id'])
+        self.assertEqual(error.exception.status,404)
+        with self.assertRaises(APIError):self.store.archive_dashboard_task('bad',task['id'])
+        self.store.archive_dashboard_task(token,task['id'],False)
+        self.assertEqual(self.store.dashboard(token)['total'],1)
+        self.store.archive_dashboard_task(token,task['id'])
+        restarted=Store(self.cfg,clock=lambda:self.now)
+        self.assertEqual(restarted.dashboard(token)['archived_count'],1)
+        self.store.delete_task(self.key,task['id'])
+        with self.store.db() as c:self.assertEqual(c.execute('SELECT count(*) FROM dashboard_archives').fetchone()[0],0)
+
+    def test_dashboard_global_filters_summary_and_lazy_trends(self):
+        task=self.store.create_task(self.key,{'name':'loss_seed42'})
+        waiting=self.store.create_task(self.key,{'name':'等待任务'})
+        with self.store.db() as c:
+            body=c.execute("SELECT body FROM notices WHERE task=? AND kind='started'",(task['id'],)).fetchone()[0]
+        token=re.search(r'/dashboard/([A-Za-z0-9_-]{43})',body).group(1)
+        self.event(task,'metric',metrics={'loss':.5})
+        self.now+=31;self.event(task,'metric',event_id='next',metrics={'loss':.2})
+        compact=self.store.dashboard(token,trends=False,query='loss_seed42')
+        self.assertEqual(len(compact['tasks']),1);self.assertEqual(compact['tasks'][0]['trend'],[])
+        self.assertEqual(compact['summary']['running'],1);self.assertEqual(compact['summary']['waiting'],1)
+        detail=self.store.dashboard(token,task_id=task['id'])
+        self.assertEqual(len(detail['tasks'][0]['trend']),2)
+        self.assertEqual(self.store.dashboard(token,status='active')['total'],2)
+        self.assertEqual(self.store.dashboard(token,status='waiting')['total'],1)
+        self.assertEqual(self.store.dashboard(token,query='missing')['total'],0)
+        self.assertEqual(self.store.dashboard(token,query='%')['total'],0)
+        self.now+=301
+        self.assertEqual(self.store.dashboard(token,status='outage')['total'],2)
+        self.event(task,'failed',event_id='finish')
+        self.assertEqual(self.store.dashboard(token,status='ended')['total'],1)
+        self.assertEqual(self.store.dashboard(token)['summary']['failed'],1)
+        with self.assertRaises(APIError):self.store.dashboard(token,status='invalid')
+
     def test_read_snapshot_does_not_block_event_writes(self):
         task=self.task()
         with self.store.db(read_only=True) as reader:
@@ -378,6 +430,11 @@ class Behavior(unittest.TestCase):
             self.assertEqual(call('/v1/dashboard/'+'x'*43)[0],404)
             self.assertEqual(call('/v1/dashboard/'+dashboard_token+'?offset=bad')[0],400)
             self.assertEqual(call('/v1/dashboard/'+dashboard_token,headers={'Origin':'https://evil.example'})[0],403)
+            self.assertEqual(call('/v1/dashboard/'+dashboard_token+'/archive',{'task_id':public_exp.task['id']},headers={'Content-Type':'application/json','Origin':'https://evil.example'})[0],403)
+            self.assertEqual(call('/v1/dashboard/'+dashboard_token+'/archive',{'task_id':public_exp.task['id']},headers={'Content-Type':'application/json'})[0],200)
+            self.assertEqual(json.loads(call('/v1/dashboard/'+dashboard_token)[1])['total'],0)
+            self.assertEqual(json.loads(call('/v1/dashboard/'+dashboard_token+'?archived=1')[1])['total'],1)
+            self.assertEqual(call('/v1/dashboard/'+dashboard_token+'/archive',{'task_id':public_exp.task['id'],'archived':False},headers={'Content-Type':'application/json'})[0],200)
             for asset in ['/dashboard.js','/dashboard.css']:self.assertEqual(call(asset)[0],200)
             import gzip
             request=Request(base+'/dashboard.js',headers={'Accept-Encoding':'gzip'})
