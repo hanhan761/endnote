@@ -22,3 +22,12 @@
 - Authorized owner start notification accepted by SMTP 3.01 seconds after enqueue. Public API creation, metric updates, two-point trend and final cancelled status verified. Acceptance by SMTP does not establish inbox delivery time.
 - Additive dashboards and samples tables; SQLite backup taken on the authorized workstation under deployment lock. Previous release 49a1f0e5dbc6e18e2d9e21b90122b56028aef675a74d59ef6810e807ef174797 retained; rollback record /opt/endnote/ops/20261003T045140Z/release.json. Previous release preserves blacklist behavior but would temporarily disable new dashboard links and start notifications.
 - Service active with zero restarts, approximately 15 MiB systemd memory. Existing tunnel ingress unchanged.
+
+## 2026-10-03 — compact live status overview and archive
+
+- Runtime source revision: 45e5fc8. Artifact: 763f75169f8f9bc7912b5fde20d9ef352ba0957226762c943808f44ee9d5be9b.
+- 28 Python tests and 4 Node interaction tests passed. Coverage includes archive ownership, running-task rejection, idempotence, restore, persistence, global statistics/search/filtering, lazy trend loading, automatic 5-second refresh, reconnection and safe text rendering. The Node tests use a synthetic DOM; browser preview was unavailable, so no screenshot-based visual review was performed.
+- Local 200-task benchmark with 30 metrics each: compact overview mean 12.6 ms, maximum 15.9 ms across 8 calls; uncompressed JSON approximately 183 KiB. Trends are loaded only on opening a task detail. This measures local processing, not every user's network latency.
+- Public compact API small sample, workstation to HTTPS: 282.8 / 285.4 / 275.0 ms. Public dashboard HTML is the compact table and has no manual refresh button.
+- The prior authorized acceptance task was archived, verified hidden from default view and visible in archive, restored and verified, then archived again to avoid clutter. No user experiment was deleted or terminated.
+- Additive dashboard_archives table; SQLite backup taken under deployment lock. Previous artifact dd36a14f1444be193e83e9dc1245cbfd313d7df5f54dd3851ceac96f3da05603 retained. Rollback record: /opt/endnote/ops/20261003T051307Z/release.json. Previous version would temporarily ignore archive visibility; retained archive records resume on forward activation.
