@@ -1,5 +1,6 @@
 """Loopback HTTP server, bounded concurrency and one durable mail worker."""
 import argparse
+import gzip
 import json
 import os
 import re
@@ -8,7 +9,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit,parse_qs
 from .service import APIError, Settings, Store, smtp_sender, digest
 
 STATIC = Path(__file__).with_name("web")
@@ -46,7 +47,11 @@ class Handler(BaseHTTPRequestHandler):
         pass
     def reply(self,status,data,content_type="application/json; charset=utf-8"):
         payload=data if isinstance(data,bytes) else json.dumps(data,ensure_ascii=False).encode()
+        compressed=len(payload)>4096 and any(p.strip().split(";")[0]=="gzip" and not re.search(r";\s*q=0(?:\.0*)?(?:\s*;|\s*$)",p) for p in self.headers.get("Accept-Encoding","").split(","))
+        if compressed:payload=gzip.compress(payload,compresslevel=3,mtime=0)
         self.send_response(status)
+        if compressed:self.send_header("Content-Encoding","gzip")
+        self.send_header("Vary","Accept-Encoding")
         self.send_header("Content-Type",content_type)
         self.send_header("Content-Length",str(len(payload)))
         self.send_header("Cache-Control","no-store")
@@ -80,9 +85,9 @@ class Handler(BaseHTTPRequestHandler):
             if route=="/health" and self.command in {"GET","HEAD"}:
                 healthy=time.time()-self.server.store.worker_last<90
                 return self.reply(200 if healthy else 503,{"ok":healthy,"mail_enabled":self.server.store.settings.mail_enabled,"signup_enabled":self.server.store.settings.signup_enabled})
-            if route in {"/","/app.js","/style.css","/runner.py"} and self.command in {"GET","HEAD"}:
-                name={"/":"index.html","/app.js":"app.js","/style.css":"style.css","/runner.py":"runner.py"}[route]
-                mime={"index.html":"text/html; charset=utf-8","app.js":"text/javascript; charset=utf-8","style.css":"text/css; charset=utf-8","runner.py":"text/plain; charset=utf-8"}[name]
+            if route in {"/","/app.js","/style.css","/runner.py","/dashboard.js","/dashboard.css"} and self.command in {"GET","HEAD"}:
+                name={"/":"index.html","/app.js":"app.js","/style.css":"style.css","/runner.py":"runner.py","/dashboard.js":"dashboard.js","/dashboard.css":"dashboard.css"}[route]
+                mime={"index.html":"text/html; charset=utf-8","app.js":"text/javascript; charset=utf-8","style.css":"text/css; charset=utf-8","runner.py":"text/plain; charset=utf-8","dashboard.js":"text/javascript; charset=utf-8","dashboard.css":"text/css; charset=utf-8"}[name]
                 return self.reply(200,(STATIC/name).read_bytes(),mime)
             ip=self.client_address[0]
             # Trust only the local cloudflared process; ignore caller-supplied forwarded-for.
@@ -103,6 +108,13 @@ class Handler(BaseHTTPRequestHandler):
                 try: data=json.loads(raw)
                 except (ValueError,UnicodeDecodeError): raise APIError(400,"invalid JSON")
                 if not isinstance(data,dict): raise APIError(400,"JSON object required")
+            dashboard=re.fullmatch(r'/v1/dashboard/([A-Za-z0-9_-]{43})',route)
+            dashboard_page=re.fullmatch(r'/dashboard/([A-Za-z0-9_-]{43})',route)
+            if dashboard and self.command=='GET':
+                raw_offset=parse_qs(urlsplit(self.path).query).get('offset',['0'])[0]
+                if not re.fullmatch(r'[0-9]{1,5}',raw_offset):raise APIError(400,'invalid page offset')
+                return self.reply(200,self.server.store.dashboard(dashboard.group(1),int(raw_offset)))
+            if dashboard_page and self.command in {'GET','HEAD'}:return self.reply(200,(STATIC/'dashboard.html').read_bytes(),'text/html; charset=utf-8')
             auth=self.headers.get("Authorization","")
             key=auth[7:] if auth.startswith("Bearer ") else ""
             store=self.server.store
@@ -128,6 +140,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def worker(store,stop):
     while not stop.is_set():
+        store.wakeup.clear()
         try:
             store.tick()
             for _ in range(10):
@@ -135,7 +148,7 @@ def worker(store,stop):
                 if stop.wait(1): break
         except Exception as e:
             print("worker error: "+type(e).__name__,flush=True)
-        stop.wait(5)
+        store.wakeup.wait(5)
 
 def main():
     parser=argparse.ArgumentParser()
@@ -177,6 +190,6 @@ def main():
     print(f"endnote listening on {args.bind}:{args.port}",flush=True)
     try: server.serve_forever()
     finally:
-        stop.set(); server.server_close(); thread.join(25); lock.close()
+        stop.set(); store.wakeup.set(); server.server_close(); thread.join(25); lock.close()
 
 if __name__=="__main__": main()

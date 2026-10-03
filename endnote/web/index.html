@@ -8,6 +8,7 @@
 <label for="email">发到哪个邮箱？</label><input id="email" type="email" placeholder="你的收件邮箱" autocomplete="email">
 <label for="name">任务名称</label><input id="name" maxlength="60" value="我的实验">
 <fieldset><legend>什么时候提醒？</legend><div class="conditions">
+<label><input id="started" type="checkbox" checked>开始监控</label>
 <label><input id="success" type="checkbox" checked>成功结束</label>
 <label><input id="failure" type="checkbox" checked>失败退出</label>
 <label><input id="lost" type="checkbox" checked>心跳失联</label>
@@ -17,7 +18,7 @@
 <p class="small">心跳静默报平安，只有失联才发邮件，不会定时打扰。</p>
 <details><summary>指标达到条件时提醒（可选）</summary><div class="pair"><div><label for="metric">指标名</label><input id="metric" placeholder="loss"></div><div><label for="op">条件</label><select id="op"><option value="lt">小于</option><option value="lte">小于等于</option><option value="gt">大于</option><option value="gte">大于等于</option><option value="eq">等于</option></select></div></div><label for="threshold">阈值</label><input id="threshold" type="number" step="any" placeholder="0.01"><p class="small">指标需要实验代码主动上报。下载的命令包装器只上报心跳和结束状态。</p></details>
 <button id="create">创建提醒</button>
-<p class="small">第一次接入会发一封测试邮件。公开快捷入口每个邮箱每天最多创建 3 个任务、发送 3 次，使用固定邮件模板。</p>
+<p class="small">开始邮件附有这个邮箱的全部任务看板链接。第一次接入还会发一封测试邮件。公开快捷入口每个邮箱每天最多创建 3 个任务、发送 3 次，使用固定邮件模板。</p>
 </article>
 <section class="result" id="result" hidden><h2>提醒已创建</h2><p id="result-text"></p><button id="download">下载接入文件</button><p>将文件放到实验目录，用它启动你原本的实验命令：</p><pre>python endnote-task.py -- python train.py</pre><p class="small">把 python train.py 换成你自己的命令。接入文件仅对应此实验，请不要公开分享。创建后即开始计时，勾选失联提醒时请及时接入。</p><details><summary>代码 / HTTP API 接入</summary><p>下方配置可供实验程序读取，无需手动申请凭证：</p><pre id="integration"></pre></details></section>
 <section class="tasks"><div class="sectionline"><h2>本浏览器的任务</h2><button id="refresh" class="secondary">刷新</button></div><div id="tasks"></div><pre id="detail" hidden></pre></section>

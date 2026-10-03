@@ -31,7 +31,7 @@ class Behavior(unittest.TestCase):
         self.store.deliver_one()  # Drain the first-binding notification.
         return key
     def task(self,**config):
-        return self.store.create_task(self.key,dict(name="test",**config))
+        return self.store.create_task(self.key,dict(name="test",notify_start=False,**config))
     def event(self,task,kind,event_id="event",**data):
         return self.store.event(task["task_key"],task["id"],dict(event_id=event_id,type=kind,**data))
     def count(self,task,kind=None):
@@ -119,6 +119,89 @@ class Behavior(unittest.TestCase):
         for _ in range(5):self.store.deliver_one()
         self.assertEqual(len([x for x in self.sent if x[0]=="quick@example.com"]),3)
 
+    def test_start_mail_and_dashboard_scope_are_recipient_only(self):
+        owner=self.store.create_task(self.key,{'name':'账号实验'})
+        guest=self.store.quick_task({'email':'A@EXAMPLE.COM','name':'公开实验'},'6.6.6.6')
+        other=self.store.quick_task({'email':'other@example.com','name':'其他邮箱'},'7.7.7.7')
+        with self.store.db() as c:
+            row=c.execute("SELECT subject,body FROM notices WHERE task=? AND kind='started'",(owner['id'],)).fetchone()
+        self.assertIn('[开始]',row['subject'])
+        self.assertIn(owner['id'][:8],row['subject'])
+        token=re.search(r'/dashboard/([A-Za-z0-9_-]{43})',row['body']).group(1)
+        self.assertNotIn(token,json.dumps(owner))
+        self.assertNotIn(token,json.dumps(self.store.task_detail(self.key,owner['id'])))
+        result=self.store.dashboard(token)
+        self.assertEqual({x['id'] for x in result['tasks']},{owner['id'],guest['id']})
+        self.assertNotIn('key_hash',json.dumps(result));self.assertNotIn('task_key',json.dumps(result))
+        self.assertEqual(self.count(owner,'started'),1)
+        self.store.tick();self.store.tick()
+        self.assertEqual(self.count(owner,'started'),1)
+        with self.assertRaises(APIError):self.store.dashboard('bad-token')
+        with self.assertRaises(APIError):self.store.dashboard('x'*43)
+        silent=self.store.create_task(self.key,{'name':'不通知开始','notify_start':False})
+        self.assertEqual(self.count(silent,'started'),0)
+        self.now+=301
+        result=self.store.dashboard(token)
+        self.assertTrue(next(x for x in result['tasks'] if x['id']==owner['id'])['outage'])
+        with self.store.db() as c:
+            block=c.execute("SELECT token FROM mail_preferences WHERE recipient_hash=?",(__import__('endnote.service',fromlist=['digest']).digest('a@example.com'),)).fetchone()[0]
+        self.store.unsubscribe(block)
+        self.assertTrue(self.store.dashboard(token)['blocked'])
+
+    def test_read_snapshot_does_not_block_event_writes(self):
+        task=self.task()
+        with self.store.db(read_only=True) as reader:
+            reader.execute('SELECT count(*) FROM tasks').fetchone()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                result=pool.submit(self.event,task,'heartbeat').result(timeout=1)
+                self.assertTrue(result['ok'])
+
+    def test_start_notice_wakes_idle_worker(self):
+        from endnote.server import worker
+        stop=threading.Event();ready=threading.Event();delivered=threading.Event()
+        original_tick=self.store.tick
+        def tick():original_tick();ready.set()
+        self.store.tick=tick
+        self.store.sender=lambda *args:delivered.set()
+        self.store.wakeup.clear()
+        thread=threading.Thread(target=worker,args=(self.store,stop),daemon=True);thread.start()
+        try:
+            self.assertTrue(ready.wait(1))
+            self.store.create_task(self.key,{'name':'立即提醒'})
+            self.assertTrue(delivered.wait(1),'idle worker should wake without waiting for its 5-second poll')
+        finally:stop.set();self.store.wakeup.set();thread.join(2)
+
+    def test_dashboard_pagination_includes_all_retained_tasks(self):
+        task=self.store.create_task(self.key,{'name':'分页实验'})
+        with self.store.db() as c:
+            row=c.execute('SELECT * FROM tasks WHERE id=?',(task['id'],)).fetchone()
+            body=c.execute("SELECT body FROM notices WHERE task=? AND kind='started'",(task['id'],)).fetchone()[0]
+            for i in range(201):
+                c.execute("INSERT INTO tasks(id,owner,key_hash,name,status,created,heartbeat,config,finished) VALUES(?,?,?,?,?,?,?,?,?)",(f'{i:032x}',row['owner'],f'hash-{i}',f'历史实验 {i}','succeeded',self.now-i-1,self.now,row['config'],self.now))
+        token=re.search(r'/dashboard/([A-Za-z0-9_-]{43})',body).group(1)
+        first=self.store.dashboard(token);second=self.store.dashboard(token,200)
+        self.assertEqual(first['total'],202)
+        self.assertEqual(len(first['tasks']),200);self.assertTrue(first['has_more'])
+        self.assertEqual(len(second['tasks']),2);self.assertFalse(second['has_more'])
+        self.assertEqual(first['tasks'][0]['id'],task['id'])
+        self.assertEqual(len({x['id'] for x in first['tasks']+second['tasks']}),202)
+        with self.assertRaises(APIError):self.store.dashboard(token,-1)
+
+    def test_dashboard_samples_are_bounded_and_survive_restart(self):
+        task=self.store.create_task(self.key,{'name':'趋势测试'})
+        for i in range(125):
+            self.now+=31;self.event(task,'metric',event_id=str(i),metrics={'loss':1/(i+1),'epoch':i})
+        with self.store.db() as c:
+            self.assertEqual(c.execute('SELECT count(*) FROM samples WHERE task=?',(task['id'],)).fetchone()[0],120)
+            body=c.execute("SELECT body FROM notices WHERE task=? AND kind='started'",(task['id'],)).fetchone()[0]
+        token=re.search(r'/dashboard/([A-Za-z0-9_-]{43})',body).group(1)
+        data=Store(self.cfg,clock=lambda:self.now).dashboard(token)['tasks'][0]
+        self.assertEqual(len(data['trend']),60)
+        self.assertEqual(data['metrics']['epoch'],124)
+        self.assertEqual(data['trend'][-1]['value'],1/125)
+        self.store.delete_task(self.key,task['id'])
+        with self.store.db() as c:self.assertEqual(c.execute('SELECT count(*) FROM samples').fetchone()[0],0)
+
     def test_signup_limits_prevent_repeated_mail(self):
         for _ in range(2): self.store.request_verification("a@example.com","1.2.3.4")
         with self.assertRaises(APIError) as e: self.store.request_verification("a@example.com","1.2.3.4")
@@ -171,7 +254,7 @@ class Behavior(unittest.TestCase):
             task=self.store.quick_task({"email":"titles@example.com","name":"模型 seed42 第3次"},"7.7.7.7") if quick else self.store.create_task(self.key,{"name":"模型 seed42 第3次"})
             self.event(task,"succeeded")
             with self.store.db() as c:
-                row=c.execute("SELECT subject,body FROM notices WHERE task=?",(task["id"],)).fetchone()
+                row=c.execute("SELECT subject,body FROM notices WHERE task=? AND kind!='started'",(task["id"],)).fetchone()
             self.assertEqual(row[0],"[endnote][成功] 模型 seed42 第3次 · #"+task["id"][:8])
             self.assertIn("发送原因：实验主动报告成功结束。",row[1])
             self.assertIn(task["id"],row[1])
@@ -285,6 +368,23 @@ class Behavior(unittest.TestCase):
             with public.experiment("SDK直接使用",email="sdkquick@example.com",heartbeat_timeout=30,heartbeat_interval=5) as public_exp:
                 public_exp.metric(loss=.005)
             self.assertEqual(public.request("/v1/tasks/"+public_exp.task["id"],key=public_exp.task["task_key"])["status"],"succeeded")
+            with self.store.db() as c:
+                dashboard_body=c.execute("SELECT body FROM notices WHERE task=? AND kind='started'",(public_exp.task['id'],)).fetchone()[0]
+            dashboard_token=re.search(r'/dashboard/([A-Za-z0-9_-]{43})',dashboard_body).group(1)
+            self.assertEqual(call('/dashboard/'+dashboard_token)[0],200)
+            status,payload=call('/v1/dashboard/'+dashboard_token)
+            self.assertEqual(status,200)
+            self.assertEqual(json.loads(payload)['tasks'][0]['id'],public_exp.task['id'])
+            self.assertEqual(call('/v1/dashboard/'+'x'*43)[0],404)
+            self.assertEqual(call('/v1/dashboard/'+dashboard_token+'?offset=bad')[0],400)
+            self.assertEqual(call('/v1/dashboard/'+dashboard_token,headers={'Origin':'https://evil.example'})[0],403)
+            for asset in ['/dashboard.js','/dashboard.css']:self.assertEqual(call(asset)[0],200)
+            import gzip
+            request=Request(base+'/dashboard.js',headers={'Accept-Encoding':'gzip'})
+            with urlopen(request,timeout=3) as response:
+                self.assertEqual(response.headers['Content-Encoding'],'gzip')
+                self.assertIn(b'function render',gzip.decompress(response.read()))
+            with urlopen(Request(base+'/dashboard.js',headers={'Accept-Encoding':'gzip;q=0'}),timeout=3) as response:self.assertIsNone(response.headers['Content-Encoding'])
             client=Client(base,self.key)
             with client.experiment("python",heartbeat_timeout=30,heartbeat_interval=5) as exp:
                 exp.metric(loss=.005)

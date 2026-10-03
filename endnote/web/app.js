@@ -12,17 +12,17 @@ $("overtime").onchange=()=>{$("runtime-field").hidden=!$("overtime").checked;};
 bind("create",async()=>{
  const email=$("email").value.trim();if(!$("email").checkValidity()||!email)throw new Error("请填写收件邮箱");
  const notify_on=[];if($("success").checked)notify_on.push("succeeded");if($("failure").checked)notify_on.push("failed");if($("lost").checked)notify_on.push("heartbeat_timeout");if($("overtime").checked)notify_on.push("runtime_timeout");
- const data={email,name:$("name").value.trim(),notify_on};
+ const data={email,name:$("name").value.trim(),notify_on,notify_start:$("started").checked};
  if($("lost").checked)data.heartbeat_timeout=Number($("heartbeat").value);
  if($("overtime").checked)data.runtime_timeout=Number($("runtime").value);
  if($("metric").value.trim()){if($("threshold").value==="")throw new Error("请填写指标阈值");data.rules=[{metric:$("metric").value.trim(),op:$("op").value,value:Number($("threshold").value)}];}
- if(!notify_on.length&&!data.rules)throw new Error("请至少选择一个提醒条件");
+ if(!notify_on.length&&!data.rules&&!data.notify_start)throw new Error("请至少选择一个提醒条件");
  const task=await api("/v1/quick/tasks",data);
  latest={...task,url:location.origin+base,name:data.name};
  saved.unshift(latest);saved=saved.slice(0,50);
  localStorage.setItem("endnote-tasks",JSON.stringify(saved));localStorage.setItem("endnote-email",email);
  $("result").hidden=false;$("result-text").textContent="通知将发到 "+email+"。下载接入文件即可连接实验。";
- $("integration").textContent=JSON.stringify(latest,null,2);notice("创建成功，首次接入测试邮件已安排。");await refresh();
+ $("integration").textContent=JSON.stringify(latest,null,2);notice("创建成功。开启开始提醒时，邮件会附全部任务看板链接。");await refresh();
 });
 bind("download",async()=>{if(!latest)throw new Error("请先创建提醒");const response=await fetch(base+"/runner.py");if(!response.ok)throw new Error("无法下载接入文件");let script=await response.text();script=script.replace("TASK = None","TASK = json.loads("+JSON.stringify(JSON.stringify(latest))+")");const url=URL.createObjectURL(new Blob([script],{type:"text/x-python;charset=utf-8"}));const a=document.createElement("a");a.href=url;a.download="endnote-task.py";a.click();URL.revokeObjectURL(url);});
 async function refresh(){

@@ -10,6 +10,7 @@ import smtplib
 import sqlite3
 import ssl
 import time
+import threading
 from dataclasses import dataclass
 from email.message import EmailMessage
 from pathlib import Path
@@ -21,7 +22,7 @@ OPERATORS = {"gt": lambda a,b:a>b, "gte": lambda a,b:a>=b,
              "lt": lambda a,b:a<b, "lte": lambda a,b:a<=b, "eq": lambda a,b:a==b}
 DEFAULT_SUBJECT = "[endnote][$reason] $name · #$task_id"
 LEGACY_SUBJECT = "[endnote] $name · $reason"
-REASON_LABELS = {"succeeded":"成功", "failed":"失败", "heartbeat_timeout":"中断", "runtime_timeout":"超时"}
+REASON_LABELS = {"started":"开始", "succeeded":"成功", "failed":"失败", "heartbeat_timeout":"中断", "runtime_timeout":"超时"}
 
 NOTIFY = {"succeeded", "failed", "heartbeat_timeout", "runtime_timeout"}
 TERMINAL = {"succeeded", "failed", "cancelled"}
@@ -67,6 +68,7 @@ class Store:
     def __init__(self, settings, sender=None, clock=time.time):
         self.settings, self.sender, self.clock = settings, sender, clock
         self.worker_last = self.clock()
+        self.wakeup=threading.Event()
         Path(settings.database).parent.mkdir(parents=True,exist_ok=True)
         with self.db() as c:
             c.executescript("""
@@ -74,6 +76,8 @@ class Store:
             PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY,email TEXT UNIQUE NOT NULL,key_hash TEXT UNIQUE NOT NULL,created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS mail_preferences(recipient_hash TEXT PRIMARY KEY,token TEXT UNIQUE NOT NULL,blocked INTEGER NOT NULL DEFAULT 0,created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS dashboards(recipient_hash TEXT PRIMARY KEY,token TEXT UNIQUE NOT NULL,created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS samples(task TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,bucket INTEGER NOT NULL,created REAL NOT NULL,metrics TEXT NOT NULL,PRIMARY KEY(task,bucket));
             CREATE TABLE IF NOT EXISTS guest_accounts(id TEXT PRIMARY KEY REFERENCES accounts(id),recipient TEXT NOT NULL,created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS challenges(email TEXT PRIMARY KEY,token_hash TEXT NOT NULL,expires REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,owner TEXT NOT NULL REFERENCES accounts(id),key_hash TEXT UNIQUE NOT NULL,name TEXT NOT NULL,status TEXT NOT NULL,created REAL NOT NULL,heartbeat REAL NOT NULL,heartbeat_seq INTEGER NOT NULL DEFAULT 0,config TEXT NOT NULL,message TEXT NOT NULL DEFAULT '',metrics TEXT NOT NULL DEFAULT '{}',finished REAL);
@@ -87,14 +91,15 @@ class Store:
             """)
 
     @contextlib.contextmanager
-    def db(self):
+    def db(self,read_only=False):
         c=sqlite3.connect(self.settings.database,timeout=5,isolation_level=None)
         c.row_factory=sqlite3.Row
         c.create_function("recipient_hash",1,lambda value:digest(value.lower()),deterministic=True)
         c.execute("PRAGMA foreign_keys=ON")
         c.execute("PRAGMA synchronous=FULL")
         try:
-            c.execute("BEGIN IMMEDIATE")
+            if read_only:c.execute("PRAGMA query_only=ON")
+            c.execute("BEGIN" if read_only else "BEGIN IMMEDIATE")
             yield c
             c.commit()
         except BaseException:
@@ -187,6 +192,8 @@ class Store:
 
     def validate_config(self,data):
         name=text(data.get('name'),100,'task name')
+        notify_start=data.get("notify_start",True)
+        if not isinstance(notify_start,bool):raise APIError(400,"invalid notify_start")
         notify=data.get('notify_on',sorted(NOTIFY))
         if not isinstance(notify,list) or len(notify)>4 or any(not isinstance(x,str) or x not in NOTIFY for x in notify): raise APIError(400,"invalid notify_on")
         hb=number(data.get('heartbeat_timeout',300),30,86400,'heartbeat_timeout')
@@ -209,7 +216,7 @@ class Store:
         for template in [subject,body]:
             try: Template(template).substitute({x:x for x in ['name','status','reason','message','metrics','time','task_id']})
             except (KeyError,ValueError): raise APIError(400,"invalid template; use $name $status $reason $message $metrics $time or $task_id or $")
-        config=dict(notify_on=notify,heartbeat_timeout=hb,runtime_timeout=runtime,rules=checked,subject=subject,body=body)
+        config=dict(notify_start=notify_start,notify_on=notify,heartbeat_timeout=hb,runtime_timeout=runtime,rules=checked,subject=subject,body=body)
         return name,config
 
     def create_task(self,key,data):
@@ -225,12 +232,13 @@ class Store:
             task_key='en_task_'+secrets.token_urlsafe(32)
             now=self.clock()
             c.execute("INSERT INTO tasks(id,owner,key_hash,name,status,created,heartbeat,config) VALUES(?,?,?,?,?,?,?,?)",(task_id,account['id'],digest(task_key),name,'running',now,now,json.dumps(config)))
+            if config['notify_start']:self.trigger(c,c.execute('SELECT * FROM tasks WHERE id=?',(task_id,)).fetchone(),'started','started')
         return {'id':task_id,'task_key':task_key,'status':'running','heartbeat_timeout':config['heartbeat_timeout']}
 
     def quick_task(self,data,ip):
         if not self.settings.signup_enabled or not self.settings.mail_enabled:raise APIError(503,'service temporarily unavailable')
         address=email(data.get('email'))
-        allowed={k:data[k] for k in ['name','notify_on','heartbeat_timeout','runtime_timeout','rules'] if k in data}
+        allowed={k:data[k] for k in ['name','notify_on','heartbeat_timeout','runtime_timeout','rules','notify_start'] if k in data}
         allowed['subject']=DEFAULT_SUBJECT
         allowed['body']='任务：$name\n状态：$status\n触发条件：$reason\n指标：$metrics\n时间：$time'
         name,config=self.validate_config(allowed)
@@ -249,10 +257,41 @@ class Store:
             c.execute('INSERT INTO accounts VALUES(?,?,?,?)',(owner,owner+'@guest.endnote.invalid',digest(secrets.token_urlsafe(32)),now))
             c.execute('INSERT INTO guest_accounts VALUES(?,?,?)',(owner,address,now))
             c.execute('INSERT INTO tasks(id,owner,key_hash,name,status,created,heartbeat,config) VALUES(?,?,?,?,?,?,?,?)',(task_id,owner,digest(task_key),name,'running',now,now,json.dumps(config)))
+            if config['notify_start']:self.trigger(c,c.execute('SELECT * FROM tasks WHERE id=?',(task_id,)).fetchone(),'started','started')
             if not c.execute("SELECT 1 FROM notices WHERE recipient=? AND kind='binding'",(address,)).fetchone():
                 self.queue(c,owner,None,address,'[endnote] 提醒已创建',
                            '这是 endnote 的首次接入测试邮件。有人为这个地址创建了实验提醒。\n\n以后任务完成、失败或满足已选条件时，将向这个地址发送通知。正常心跳不会定时发邮件。\n\n若非你本人操作，可忽略；公开入口限制同一邮箱每天最多 3 次发送尝试。','binding')
         return {'id':task_id,'task_key':task_key,'status':'running','heartbeat_timeout':config['heartbeat_timeout'],'notify_on':config['notify_on']}
+
+    def dashboard(self,token,offset=0):
+        if isinstance(offset,bool) or not isinstance(offset,int) or not 0<=offset<=10000:raise APIError(400,"invalid page offset")
+        if not isinstance(token,str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}',token):raise APIError(404,'dashboard not found')
+        with self.db() as c:
+            access=c.execute('SELECT recipient_hash FROM dashboards WHERE token=?',(token,)).fetchone()
+            if not access:raise APIError(404,'dashboard not found')
+            self.limit(c,'dashboard:'+access[0],30,60)
+        with self.db(read_only=True) as c:
+            scope="FROM tasks t JOIN accounts a ON a.id=t.owner LEFT JOIN guest_accounts g ON g.id=a.id WHERE recipient_hash(COALESCE(g.recipient,a.email))=?"
+            total=c.execute('SELECT count(*) '+scope,(access[0],)).fetchone()[0]
+            rows=c.execute('SELECT t.* '+scope+" ORDER BY (t.status='running') DESC,t.created DESC LIMIT 200 OFFSET ?",(access[0],offset)).fetchall()
+            result=[];now=self.clock()
+            for row in rows:
+                config=json.loads(row['config']);metrics=json.loads(row['metrics'])
+                item={k:row[k] for k in ['id','name','status','created','heartbeat','finished']}
+                item.update(metrics=metrics,heartbeat_received=row['heartbeat_seq']>0,
+                            heartbeat_timeout=config['heartbeat_timeout'],runtime_timeout=config['runtime_timeout'],
+                            heartbeat_enabled='heartbeat_timeout' in config['notify_on'],rules=config['rules'])
+                item['outage']=row['status']=='running' and item['heartbeat_enabled'] and now-row['heartbeat']>=item['heartbeat_timeout']
+                item['notifications']=[dict(x) for x in c.execute('SELECT kind,state,created FROM notices WHERE task=? ORDER BY created DESC,rowid DESC LIMIT 8',(row['id'],))]
+                metric=next((r['metric'] for r in config['rules'] if r['metric'] in metrics),'loss' if 'loss' in metrics else next(iter(metrics),None))
+                item['trend_metric']=metric
+                points=c.execute('SELECT created,metrics FROM samples WHERE task=? ORDER BY bucket DESC LIMIT 60',(row['id'],)).fetchall()
+                item['trend']=[]
+                for p in reversed(points):
+                    values=json.loads(p['metrics'])
+                    if metric in values:item['trend'].append({'time':p['created'],'value':values[metric]})
+                result.append(item)
+            return {'tasks':result,'total':total,'offset':offset,'has_more':offset+len(result)<total,'now':now,'blocked':bool(c.execute('SELECT blocked FROM mail_preferences WHERE recipient_hash=?',(access[0],)).fetchone()[0])}
 
     def rotate(self,key):
         with self.db() as c:
@@ -307,6 +346,9 @@ class Store:
             merged=json.loads(task['metrics']); merged.update(metrics)
             if len(merged)>30: raise APIError(400,"at most 30 distinct metrics per task")
             c.execute("UPDATE tasks SET status=?,heartbeat=?,heartbeat_seq=heartbeat_seq+1,message=?,metrics=?,finished=? WHERE id=?",(status,now,message,json.dumps(merged),now if status in TERMINAL else None,task_id))
+            if metrics:
+                c.execute('INSERT INTO samples VALUES(?,?,?,?) ON CONFLICT(task,bucket) DO UPDATE SET created=excluded.created,metrics=excluded.metrics',(task_id,int(now//30),now,json.dumps(merged)))
+                c.execute('DELETE FROM samples WHERE task=? AND bucket NOT IN (SELECT bucket FROM samples WHERE task=? ORDER BY bucket DESC LIMIT 120)',(task_id,task_id))
             updated=c.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
             config=json.loads(task['config'])
             if kind in config['notify_on']: self.trigger(c,updated,kind,kind)
@@ -324,11 +366,18 @@ class Store:
             c.execute('INSERT INTO mail_preferences VALUES(?,?,0,?)',(target,token,self.clock()))
         else:token=preference['token']
         # A recipient-held revocation link; never returned through the task API.
-        footer='\n\n停止接收并屏蔽此邮箱（点击后取消待发邮件并停止相关提醒）：\n'+self.settings.public_url+'/unsubscribe/'+token
+        dashboard=c.execute('SELECT token FROM dashboards WHERE recipient_hash=?',(target,)).fetchone()
+        if not dashboard:
+            dashboard_token=secrets.token_urlsafe(32)
+            c.execute('INSERT INTO dashboards VALUES(?,?,?)',(target,dashboard_token,self.clock()))
+        else:dashboard_token=dashboard['token']
+        footer='\n\n查看这个邮箱的全部任务进展（私有只读链接，请勿转发）：\n'+self.settings.public_url+'/dashboard/'+dashboard_token
+        footer+='\n\n停止接收并屏蔽此邮箱（点击后取消待发邮件并停止相关提醒）：\n'+self.settings.public_url+'/unsubscribe/'+token
         body=body+footer
         if c.execute("SELECT count(*) FROM notices WHERE state='pending'").fetchone()[0]>=2000: raise APIError(429,"mail queue capacity reached")
         now=self.clock()
         c.execute("INSERT INTO notices(id,owner,task,recipient,subject,body,kind,next_at,created,expires) VALUES(?,?,?,?,?,?,?,?,?,?)",(secrets.token_hex(16),owner,task,recipient,subject,body,kind,now,now,expires))
+        self.wakeup.set()
 
     def trigger(self,c,task,identity,reason):
         if c.execute("SELECT 1 FROM triggers WHERE task=? AND reason=?",(task['id'],identity)).fetchone(): return False
@@ -337,7 +386,7 @@ class Store:
         if self.blocked(c,recipient):return False
         fields=dict(name=task['name'],status=task['status'],reason=reason,message=task['message'],metrics=task['metrics'],time=time.strftime('%Y-%m-%d %H:%M:%S UTC',time.gmtime(self.clock())))
         fields['task_id']=task['id'][:8]
-        template=config['subject']
+        template=DEFAULT_SUBJECT if reason=='started' else config['subject']
         if template in {DEFAULT_SUBJECT,LEGACY_SUBJECT}:
             template=DEFAULT_SUBJECT
             subject_fields=dict(fields,reason=REASON_LABELS.get(reason,'指标达标'))
@@ -351,7 +400,7 @@ class Store:
                 metric,op,threshold=parts
                 operation={'gt':'大于','gte':'大于等于','lt':'小于','lte':'小于等于','eq':'等于'}.get(op,op)
                 metric_reason=f"{metric} {operation} {threshold}（上报值：{json.loads(task['metrics']).get(metric)}）"
-        explanation={'succeeded':'实验主动报告成功结束。','failed':'实验主动报告失败（例如命令非零退出或代码异常）。','heartbeat_timeout':f"超过 {config['heartbeat_timeout']:g} 秒未收到新心跳；最后心跳："+time.strftime('%Y-%m-%d %H:%M:%S UTC',time.gmtime(task['heartbeat']))+'。这表示上报失联，可能是进程退出、卡住或网络中断。','runtime_timeout':f"实验运行时长达到设定上限 {config['runtime_timeout']} 秒。"}.get(reason,'上报指标满足设定规则：'+metric_reason+'。')
+        explanation={'started':'任务已创建，监控已开始。请及时启动或连接实验；这封邮件不代表实验命令已经执行。','succeeded':'实验主动报告成功结束。','failed':'实验主动报告失败（例如命令非零退出或代码异常）。','heartbeat_timeout':f"超过 {config['heartbeat_timeout']:g} 秒未收到新心跳；最后心跳："+time.strftime('%Y-%m-%d %H:%M:%S UTC',time.gmtime(task['heartbeat']))+'。这表示上报失联，可能是进程退出、卡住或网络中断。','runtime_timeout':f"实验运行时长达到设定上限 {config['runtime_timeout']} 秒。"}.get(reason,'上报指标满足设定规则：'+metric_reason+'。')
         body='发送原因：'+explanation+'\n\n'+body
         body+='\n任务 ID：'+task['id']+'\n创建时间：'+time.strftime('%Y-%m-%d %H:%M:%S UTC',time.gmtime(task['created']))
         c.execute("SAVEPOINT enqueue")
