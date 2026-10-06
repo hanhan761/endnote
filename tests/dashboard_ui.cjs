@@ -56,18 +56,17 @@ test("project groups keep attempts together in creation order across status upda
  {...template,id:"d",name:"卫星研究 五模型",created:600,status:"cancelled"});
  app.intervals[0].fn();await settle();
  const order=rows(app).map(row=>row.dataset.taskId);
- assert.equal(app.nodes.tasks.children.filter(row=>row.dataset.groupKey&&!row.dataset.taskId).length,2);
+ assert.equal(app.nodes.tasks.children.length,4);assert.ok(app.nodes.tasks.children.every(row=>row.dataset.taskId));
  const satellite=rows(app).filter(row=>row.dataset.groupKey==="卫星研究");
  assert.deepEqual(satellite.map(row=>row.dataset.taskId),["d","a","c"]);
  assert.ok(text(satellite[1]).includes("记录 1/2"));assert.ok(text(satellite[2]).includes("记录 2/2"));
  app.tasks.reverse();app.tasks.find(t=>t.id==="c").status="succeeded";app.intervals[0].fn();await settle();
  assert.deepEqual(rows(app).map(row=>row.dataset.taskId),order);
- const header=app.nodes.tasks.children.find(row=>row.dataset.groupKey==="卫星研究"&&!row.dataset.taskId),button=header.children[0].children[0];
- button.onclick();assert.equal(rows(app).filter(row=>row.dataset.groupKey==="卫星研究").length,0);
- app.intervals[0].fn();await settle();
- const collapsed=app.nodes.tasks.children.find(row=>row.dataset.groupKey==="卫星研究"&&!row.dataset.taskId).children[0].children[0];
- assert.equal(collapsed.attributes["aria-expanded"],"false");assert.ok(text(collapsed).includes("3 条记录"));
- collapsed.onclick();assert.equal(rows(app).length,4);
+ const colors=rows(app).filter(row=>row.dataset.groupKey==="卫星研究").map(row=>row.className.match(/cluster-tone-\d/)[0]);
+ assert.equal(new Set(colors).size,1);
+ assert.ok(satellite[0].className.includes("group-start"));assert.ok(!satellite[1].className.includes("group-start"));
+ assert.equal(app.nodes.tasks.children.length,4);
+
 });
 
 test("queued is explicit, persists through heartbeats, and yields to outage or completion",async()=>{const app=setup();await settle();app.tasks[0].metrics.endnote_queued=1;app.intervals[0].fn();await settle();assert.ok(text(rows(app)[0]).includes("排队中"));assert.ok(!text(rows(app)[0]).includes("endnote_queued"));app.tasks[0].outage=true;app.intervals[0].fn();await settle();assert.ok(text(rows(app)[0]).includes("心跳失联"));app.tasks[0].outage=false;app.tasks[0].status="succeeded";app.intervals[0].fn();await settle();assert.ok(text(rows(app)[0]).includes("已成功"));app.tasks[0].status="running";app.tasks[0].metrics.endnote_queued=0;app.intervals[0].fn();await settle();assert.ok(text(rows(app)[0]).includes("运行中"));});

@@ -2,7 +2,7 @@
 
 Each 200-record page groups rows by the first segment of the task name, before whitespace, a middle dot, a vertical bar, or a colon. Use a stable project prefix, e.g. 图像分类 ResNet50 seed42 第3次.
 
-Groups sort by project name; records sort by creation time and task ID. Status changes do not reorder records. Same-name records show creation-order labels, not inferred retry numbers. Groups show record and status counts and can collapse; collapse state survives automatic refresh during the page session. Search, filters, details and reversible archiving remain available. Grouping is per page, not across pages.
+Groups sort by project name; records sort by creation time and task ID. Status changes do not reorder records. Same-name records show creation-order labels, not inferred retry numbers. Groups are contiguous row blocks with pale backgrounds and a narrow left accent. There is no additional group title, count row or collapse control. Neighboring groups use different tones and a small whitespace gap. The overview shows a single priority metric. Short task IDs and notification history are available in details; search, filters and reversible archiving remain available. Grouping is per page, not across pages.
 
 ## Verification and release
 

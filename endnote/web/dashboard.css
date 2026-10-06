@@ -3,7 +3,30 @@
 /* Dense overview: preserve legibility while fitting more experiments. */
 td{height:39px;font-size:13px}.task-name{font-size:13px}.badge{font-size:11px}th{color:#76816e}.heartbeat{color:#708166}.runtime{color:#697c5e}.metric-inline{font-size:11px}.mail-inline{color:#77896b}.archive-button{font-size:11px;color:#728767}@media(min-width:1450px){td{height:37px}}@media(max-width:760px){.task-name{font-size:12px}.badge{font-size:10px}.metric-inline{font-size:10px}.archive-button{font-size:10px}}
 
-/* Keep related experiment records together without changing row density. */
-.group-row td{padding:0;background:#eef2e9;border-top:1px solid #d8e1d0;border-bottom:1px solid #d8e1d0}.group-toggle{display:flex;align-items:center;gap:12px;width:100%;min-height:38px;padding:8px 14px;border:0;background:transparent;color:#34442d;text-align:left;cursor:pointer}.group-toggle:hover{background:#e5ecde}.group-toggle:focus-visible{outline:2px solid #668656;outline-offset:-2px}.group-arrow{width:12px;color:#718165}.group-total{font-size:11px;color:#75806e}.group-status{font-size:11px;color:#66715f}.group-status.outage,.group-status.failed{color:#a54838}.group-status.running{color:#466b36}.record-number{flex:none;font-size:10px;color:#6e7f62;background:#eef2e9;border-radius:3px;padding:2px 4px}@media(max-width:700px){.group-toggle{gap:8px;flex-wrap:wrap}.group-status{font-size:10px}}
 
-.badge.queued{color:#846019;background:#fff3d8}.group-status.queued{color:#846019}
+/* Quiet clusters: contiguous rows, no extra title layer. */
+.cluster-tone-0{--cluster-bg:#f1f6f3;--cluster-hover:#e8f0eb;--cluster-accent:#9ab8a6}
+.cluster-tone-1{--cluster-bg:#f1f4f9;--cluster-hover:#e8edf5;--cluster-accent:#a0b3cf}
+.cluster-tone-2{--cluster-bg:#f6f3f9;--cluster-hover:#eee9f4;--cluster-accent:#b5a5c9}
+.cluster-tone-3{--cluster-bg:#faf5ed;--cluster-hover:#f3ebdf;--cluster-accent:#c9b18e}
+.cluster-tone-4{--cluster-bg:#edf6f7;--cluster-hover:#e3eef0;--cluster-accent:#91b9c0}
+.cluster-tone-5{--cluster-bg:#f9f1f1;--cluster-hover:#f1e7e7;--cluster-accent:#c6a1a1}
+tbody tr.cluster-row,tbody tr.cluster-row.outage-row{background:var(--cluster-bg)}
+tbody tr.cluster-row:hover,tbody tr.cluster-row.outage-row:hover{background:var(--cluster-hover)}
+.cluster-row td{border-bottom:1px solid #ffffff85;height:44px}
+.cluster-row td:first-child{border-left:3px solid var(--cluster-accent);padding-left:14px}
+.cluster-row.group-start td{border-top:7px solid #fff}
+.cluster-row.group-start:first-child td{border-top:0}
+.task-name{gap:8px;font-weight:500}.task-name .short-id{display:none}
+.record-number{flex:none;font-size:10px;font-weight:400;color:#768078}
+.badge{background:transparent;padding:0;color:#357552;font-size:11px}
+.badge.queued{background:transparent;color:#997023}
+.badge.waiting,.badge.cancelled{background:transparent;color:#7b8580}
+.badge.failed{background:transparent;color:#ad534b}
+.badge.outage{background:transparent;color:#ad6f23}
+.badge:before{width:5px;height:5px}
+.stat:not(:nth-child(2)) .stat-note{display:none}
+.mail-col,.mail-width{display:none}
+.name-width{width:42%}.state-width{width:10%}.heartbeat-width{width:14%}.duration-width{width:10%}.metrics-width{width:16%}.action-width{width:8%}
+@media(max-width:760px){.name-width{width:43%}.state-width{width:15%}.heartbeat-width{width:19%}.metrics-width{width:15%}.action-width{width:8%}.cluster-row td:first-child{padding-left:9px}}
+@media(max-width:520px){.name-width{width:43%}.state-width{width:19%}.heartbeat-width{width:26%}.action-width{width:12%}}
