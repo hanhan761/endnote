@@ -36,7 +36,7 @@ test("compact status rows render safe text and update automatically every five s
 test("ended task archives from overview and restores without deleting data",async()=>{
  const app=setup();await settle();const runningAction=rows(app)[0].children.at(-1);assert.equal(runningAction.children.length,0);
  const archive=rows(app)[1].children.at(-1).children[0];await archive.onclick();await settle();assert.equal(rows(app).length,1);assert.equal(app.tasks.length,2);assert.ok(app.archived.has("2".repeat(32)));
- app.nodes.tabs.children[4].onclick();await settle();assert.equal(rows(app).length,1);assert.ok(text(app.nodes.tasks).includes("恢复"));
+ app.nodes.tabs.children.find(button=>text(button).startsWith("已归档")).onclick();await settle();assert.equal(rows(app).length,1);assert.ok(text(app.nodes.tasks).includes("恢复"));
  await rows(app)[0].children.at(-1).children[0].onclick();await settle();assert.equal(app.archived.size,0);assert.equal(rows(app).length,0);
 });
 test("search goes to server and detail loads trends only when opened",async()=>{
@@ -69,3 +69,5 @@ test("project groups keep attempts together in creation order across status upda
  assert.equal(collapsed.attributes["aria-expanded"],"false");assert.ok(text(collapsed).includes("3 条记录"));
  collapsed.onclick();assert.equal(rows(app).length,4);
 });
+
+test("queued is explicit, persists through heartbeats, and yields to outage or completion",async()=>{const app=setup();await settle();app.tasks[0].metrics.endnote_queued=1;app.intervals[0].fn();await settle();assert.ok(text(rows(app)[0]).includes("排队中"));assert.ok(!text(rows(app)[0]).includes("endnote_queued"));app.tasks[0].outage=true;app.intervals[0].fn();await settle();assert.ok(text(rows(app)[0]).includes("心跳失联"));app.tasks[0].outage=false;app.tasks[0].status="succeeded";app.intervals[0].fn();await settle();assert.ok(text(rows(app)[0]).includes("已成功"));app.tasks[0].status="running";app.tasks[0].metrics.endnote_queued=0;app.intervals[0].fn();await settle();assert.ok(text(rows(app)[0]).includes("运行中"));});

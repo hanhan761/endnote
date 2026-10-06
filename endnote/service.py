@@ -265,7 +265,7 @@ class Store:
         return {'id':task_id,'task_key':task_key,'status':'running','heartbeat_timeout':config['heartbeat_timeout'],'notify_on':config['notify_on']}
 
     def dashboard(self,token,offset=0,archived=False,status="all",query="",trends=True,task_id=None):
-        if not isinstance(status,str) or status not in {"all","active","running","waiting","outage","succeeded","failed","cancelled","ended"}:raise APIError(400,"invalid status filter")
+        if not isinstance(status,str) or status not in {"all","active","running","waiting","queued","outage","succeeded","failed","cancelled","ended"}:raise APIError(400,"invalid status filter")
         text(query,100,"search",empty=True)
         if not isinstance(trends,bool):raise APIError(400,"invalid trend filter")
         if task_id is not None and (not isinstance(task_id,str) or not re.fullmatch(r"[0-9a-f]{32}",task_id)):raise APIError(400,"invalid task id")
@@ -283,8 +283,11 @@ class Store:
             filter_clause='';filter_args=[]
             if status=='outage':filter_clause+=' AND '+outage_sql;filter_args.append(self.clock())
             elif status=='active':filter_clause+=" AND t.status='running' AND NOT "+outage_sql;filter_args.append(self.clock())
+            elif status=='queued':
+                filter_clause+=" AND t.status='running' AND COALESCE(json_extract(t.metrics,'$.endnote_queued'),0)=1 AND NOT "+outage_sql;filter_args.append(self.clock())
             elif status in {'running','waiting'}:
                 filter_clause+=" AND t.status='running' AND t.heartbeat_seq"+('>0' if status=='running' else '=0')+' AND NOT '+outage_sql;filter_args.append(self.clock())
+                filter_clause+=" AND COALESCE(json_extract(t.metrics,'$.endnote_queued'),0)!=1"
             elif status=='ended':filter_clause+=" AND t.status IN ('succeeded','failed','cancelled')"
             elif status!='all':filter_clause+=' AND t.status=?';filter_args.append(status)
             if query:
@@ -294,11 +297,11 @@ class Store:
             row_args=[access[0],access[0],*filter_args]
             total=c.execute('SELECT count(*) '+scope+archive_clause+filter_clause,row_args).fetchone()[0]
             archived_count=c.execute('SELECT count(*) '+scope+" AND EXISTS (SELECT 1 FROM dashboard_archives d WHERE d.recipient_hash=? AND d.task=t.id)",(access[0],access[0])).fetchone()[0]
-            now=self.clock();summary={'running':0,'waiting':0,'outage':0,'succeeded':0,'failed':0,'cancelled':0}
-            for info in c.execute('SELECT t.status,t.heartbeat,t.heartbeat_seq,t.config '+scope+" AND NOT EXISTS (SELECT 1 FROM dashboard_archives d WHERE d.recipient_hash=? AND d.task=t.id)",(access[0],access[0])):
+            now=self.clock();summary={'queued':0,'running':0,'waiting':0,'outage':0,'succeeded':0,'failed':0,'cancelled':0}
+            for info in c.execute('SELECT t.status,t.heartbeat,t.heartbeat_seq,t.config,t.metrics '+scope+" AND NOT EXISTS (SELECT 1 FROM dashboard_archives d WHERE d.recipient_hash=? AND d.task=t.id)",(access[0],access[0])):
                 key=info['status'];cfg=json.loads(info['config'])
                 if key=='running':
-                    key='outage' if 'heartbeat_timeout' in cfg['notify_on'] and now-info['heartbeat']>=cfg['heartbeat_timeout'] else 'waiting' if info['heartbeat_seq']==0 else 'running'
+                    key='outage' if 'heartbeat_timeout' in cfg['notify_on'] and now-info['heartbeat']>=cfg['heartbeat_timeout'] else 'queued' if json.loads(info['metrics']).get('endnote_queued')==1 else 'waiting' if info['heartbeat_seq']==0 else 'running'
                 summary[key]+=1
             rows=c.execute('SELECT t.* '+scope+archive_clause+filter_clause+' ORDER BY '+outage_sql+" DESC,(t.status='running') DESC,t.created DESC LIMIT 200 OFFSET ?",[*row_args,now,offset]).fetchall()
             result=[]
@@ -366,7 +369,7 @@ class Store:
     def event(self,key,task_id,data):
         event_id=text(data.get('event_id'),100,'event_id')
         kind=data.get('type')
-        if not isinstance(kind,str) or kind not in {'heartbeat','metric','succeeded','failed','cancelled'}: raise APIError(400,"invalid event type")
+        if not isinstance(kind,str) or kind not in {'heartbeat','metric','queued','started','succeeded','failed','cancelled'}: raise APIError(400,"invalid event type")
         message=text(data.get('message',''),2000,'message',empty=True)
         metrics=data.get('metrics',{})
         if not isinstance(metrics,dict) or len(metrics)>30: raise APIError(400,"invalid metrics")
@@ -385,6 +388,7 @@ class Store:
             c.execute("DELETE FROM events WHERE task=? AND event_id NOT IN (SELECT event_id FROM events WHERE task=? ORDER BY created DESC,rowid DESC LIMIT 1000)",(task_id,task_id))
             status=kind if kind in TERMINAL else 'running'
             merged=json.loads(task['metrics']); merged.update(metrics)
+            if kind in {'queued','started'}: merged['endnote_queued']=int(kind=='queued')
             if len(merged)>30: raise APIError(400,"at most 30 distinct metrics per task")
             c.execute("UPDATE tasks SET status=?,heartbeat=?,heartbeat_seq=heartbeat_seq+1,message=?,metrics=?,finished=? WHERE id=?",(status,now,message,json.dumps(merged),now if status in TERMINAL else None,task_id))
             if metrics:

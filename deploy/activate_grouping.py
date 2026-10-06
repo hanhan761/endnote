@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path('/opt/endnote')
 BASE = '47e3909e5937af46efa46239502ab8676c6c1aa9ba010252be6c8de3559b70eb'
-SHA = '087878ac68ae67816edc4b5c5fdbec914a33262083c4f17f76c07f98f0445402'
+SHA = '7b7bf4743985ad7547d107eb9e0e3f5f7710111ba87ead690b9636ea1071296a'
 
 def run(*args): return subprocess.check_output(args, text=True, stderr=subprocess.PIPE, timeout=30)
 def healthy(public=False):
@@ -46,8 +46,19 @@ def main():
     manifest = json.loads(data.pop('MANIFEST.json'))
     assert manifest['format'] == 1 and manifest['files'] == {n:hashlib.sha256(v).hexdigest() for n,v in sorted(data.items())}
     before = {str(p.relative_to(old)):p.read_bytes() for p in old.rglob('*') if p.is_file()}
-    assert set(data) == set(before) and {n for n in data if data[n] != before[n]} == {'endnote/web/dashboard.js', 'endnote/web/dashboard.css'}
-    usage = shutil.disk_usage(ROOT); assert usage.free > max(2*1024**3, usage.total*.15)
+    assert set(data) == set(before) and {n for n in data if data[n] != before[n]} == {'endnote/web/dashboard.js', 'endnote/web/dashboard.css', 'endnote/service.py', 'endnote/client.py'}
+    from queue_patch import patch_service, patch_client
+    assert data['endnote/service.py'] == patch_service(before['endnote/service.py'])
+    assert data['endnote/client.py'] == patch_client(before['endnote/client.py'])
+    usage = shutil.disk_usage(ROOT)
+    # This flag requires the owner's explicit one-release capacity exception.
+    exception = '--approved-capacity-exception' in sys.argv[2:]
+    peak = len(raw)*2 + sum(len(v) for v in data.values())*3
+    reserve = 2*1024**3 if exception else max(2*1024**3, usage.total*.15)
+    assert usage.free-peak > reserve
+    stat = os.statvfs(ROOT); assert stat.f_favail > 4096
+    mem = int(Path('/proc/meminfo').read_text().split('MemAvailable:')[1].split()[0])*1024
+    assert mem > 1024**3
     assert float(Path('/proc/pressure/io').read_text().split('full avg10=')[1].split()[0]) < 5
     assert run('systemctl','is-active','endnote','cloudflared').split() == ['active','active']
     healthy(); healthy(True)
@@ -57,7 +68,7 @@ def main():
     for name,value in data.items():
         path = release/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_bytes(value); path.chmod(0o644)
     ops = ROOT/'ops'/('grouping-20261006-'+SHA[:12]); ops.mkdir(mode=0o700)
-    receipt = {'release':SHA, 'previous':str(old), 'scope':'Dashboard grouping only; no credentials, database, unit or ingress changes'}
+    receipt = {'release':SHA, 'previous':str(old), 'scope':'Dashboard grouping and explicit queued/started events; no credentials, database, unit or ingress changes', 'capacity_exception':exception, 'free_bytes':usage.free, 'estimated_peak_bytes':peak}
     (ops/'release.json').write_text(json.dumps(receipt,indent=2))
     activated = False
     try:

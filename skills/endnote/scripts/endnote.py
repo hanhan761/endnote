@@ -80,6 +80,8 @@ class Experiment:
         return result
     def metric(self,**values): return self.event("metric",values)
     def heartbeat(self): return self.event("heartbeat")
+    def queued(self): return self.event("queued")
+    def started(self): return self.event("started")
     def _heartbeat(self):
         while not self.stop.wait(self.interval):
             try: self.heartbeat()
@@ -114,7 +116,7 @@ def main():
     p=sub.add_parser("verify"); p.add_argument("--email")
     p=sub.add_parser("list")
     p=sub.add_parser("run"); p.add_argument("--email"); p.add_argument("--name",required=True); p.add_argument("--heartbeat-timeout",type=int,default=300); p.add_argument("--heartbeat-interval",type=int,default=60); p.add_argument("--runtime-timeout",type=int); p.add_argument("--rules",help="JSON file of metric rules"); p.add_argument("command",nargs=argparse.REMAINDER)
-    p=sub.add_parser("event"); p.add_argument("--task",required=True); p.add_argument("--type",required=True,choices=["heartbeat","metric","succeeded","failed","cancelled"]); p.add_argument("--metrics",default="{}"); p.add_argument("--message",default="")
+    p=sub.add_parser("event"); p.add_argument("--task",required=True); p.add_argument("--type",required=True,choices=["heartbeat","metric","queued","started","succeeded","failed","cancelled"]); p.add_argument("--metrics",default="{}"); p.add_argument("--message",default="")
     args=parser.parse_args()
     client=Client(args.url)
     if args.action in {"request-code","verify"}:

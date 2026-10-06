@@ -11,3 +11,9 @@ The scoped change passed 5 dashboard DOM regression tests and 28 Python tests in
 Package locally with python scripts/package_grouping.py. It preserves the exact production baseline archive and replaces only dashboard.js and dashboard.css. After registered target identity and capacity checks pass, use sudo python3 deploy/activate_grouping.py ARTIFACT. Activation verifies the digest, manifest and the two-file scope, retains the prior immutable release, and observes health for 60 seconds with rollback on failure.
 
 2026-10-06: production activation pending. Read-only preflight found 101,353,336,832 free bytes on a 982,820,896,768-byte filesystem, below the existing 15% reserve. No production files, services, experiment data or credentials were changed.
+
+## Queue state update
+
+The release also adds explicit queued and started events. Queue heartbeats preserve the queued state; started clears it. Outage and terminal status take precedence. Queue transitions do not send extra start mail. A queued filter and summary count are available; legacy tasks without a queue report keep their existing state. The client and installed skill support the two new events. No database migration is needed.
+
+Updated validation: 31 Python tests pass in the scoped HEAD tree and 6 dashboard DOM regressions pass. The release is built from the verified live baseline, with only dashboard.js, dashboard.css, service.py and client.py changed. The activation script verifies service/client bytes against the narrow queue patch. An owner-approved, one-release capacity exception can be specified with --approved-capacity-exception; it requires at least 2 GiB after conservatively estimated peak usage and preserves all remaining health, lock, checksum and rollback gates. Do not supply it without explicit authorization.

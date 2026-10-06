@@ -42,6 +42,19 @@ python endnote-task.py -- python train.py
 
 开始和首次接入测试邮件均计入发送限额，达到限额时可能排队。已结束任务保留 30 天。旧任务的历史指标不会补造，升级后新上报的指标才开始采样。
 
+## 排队与运行状态
+
+等待资源或前置任务时，上报 queued；真正开始执行时上报 started。排队期间正常上报 heartbeat，看板会持续显示“排队中”，直到收到 started；失联、成功或失败状态优先显示。创建后尚未首次上报的任务显示“待启动”，旧任务不会被猜测为排队。queued/started 只更新状态，不重复发送开始邮件。
+
+SDK 中可调用 run.queued() 和 run.started()；HTTP 事件示例：
+
+~~~json
+{"event_id":"queue-001","type":"queued"}
+{"event_id":"start-001","type":"started"}
+~~~
+
+内部状态标记 endnote_queued 由服务维护，请勿将它用作实验指标。底层兼容接口的 status 保持 running，看板按排队标记区分执行状态。
+
 ## 实验多了，怎么区分邮件
 
 同一项目使用相同的首段名称，后接空格和模型、参数或轮次；看板会将这个项目前缀相同的记录放在一起。不要在项目前缀中插入空格。例如“图像分类 ResNet50 seed42 第3次”。默认标题：

@@ -8,6 +8,8 @@ import sys
 import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT/'deploy'))
+from queue_patch import patch_service, patch_client
 
 BASE = '47e3909e5937af46efa46239502ab8676c6c1aa9ba010252be6c8de3559b70eb'
 raw = (ROOT / 'dist/endnote-subject-20261004.tar.gz').read_bytes()
@@ -18,6 +20,8 @@ manifest = json.loads(files.pop('MANIFEST.json'))
 assert manifest['files'] == {n:hashlib.sha256(v).hexdigest() for n,v in sorted(files.items())}
 for name in ['endnote/web/dashboard.js', 'endnote/web/dashboard.css']:
     files[name] = (ROOT / name).read_bytes()
+files['endnote/service.py'] = patch_service(files['endnote/service.py'])
+files['endnote/client.py'] = patch_client(files['endnote/client.py'])
 files['MANIFEST.json'] = json.dumps({'format':1,'files':{n:hashlib.sha256(v).hexdigest() for n,v in sorted(files.items())}}, sort_keys=True).encode()
 candidate = ROOT / 'dist/grouping-candidate'
 for name, value in files.items():
@@ -27,4 +31,4 @@ with output.open('wb') as dest, gzip.GzipFile(fileobj=dest, mode='wb', mtime=0) 
     for name,value in sorted(files.items()):
         info = tarfile.TarInfo(name); info.size = len(value); info.mode = 0o644; info.mtime = 0
         archive.addfile(info, io.BytesIO(value))
-print(json.dumps({'sha256':hashlib.sha256(output.read_bytes()).hexdigest(), 'baseline':BASE, 'changed':['endnote/web/dashboard.js','endnote/web/dashboard.css']}))
+print(json.dumps({'sha256':hashlib.sha256(output.read_bytes()).hexdigest(), 'baseline':BASE, 'changed':['endnote/web/dashboard.js','endnote/web/dashboard.css','endnote/service.py','endnote/client.py']}))
