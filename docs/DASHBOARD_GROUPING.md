@@ -21,3 +21,7 @@ Updated validation: 31 Python tests pass in the scoped HEAD tree and 6 dashboard
 ## Production activation
 
 2026-10-06: the owner explicitly approved the one-release capacity exception. Release 7b7bf4743985ad7547d107eb9e0e3f5f7710111ba87ead690b9636ea1071296a was activated on the authorized workstation. Four origin/public health samples passed over 62 seconds; unrelated service PIDs and the service unit were unchanged. Previous release 47e3909e5937af46efa46239502ab8676c6c1aa9ba010252be6c8de3559b70eb is retained for rollback. Public dashboard asset checksums match the local candidate; the queued filter responds successfully. No experiment data cleanup or database migration was performed. The capacity exception does not alter the default 15% reserve for future releases.
+
+## Simplified color layout activation
+
+2026-10-06: release c4504b2e4aa79d5b10d051827ee52a4d184891473494bf2f114dedfc26e021ac activated the two-file color layout update. Group title rows and collapse controls were removed, adjacent groups receive distinct pale tones, and a single priority metric is shown. Public JavaScript/CSS checksums match the candidate; four health samples passed over 62 seconds. The prior queue release is retained for rollback. This dashboard follow-up used the owner's approved capacity exception without changing the default threshold. Actual free space was 140,363,472,896 bytes. Browser UI automation was unavailable; verification covered scoped Python tests, DOM regressions and live asset/health checks.
