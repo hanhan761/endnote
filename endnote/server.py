@@ -108,6 +108,22 @@ class Handler(BaseHTTPRequestHandler):
                 try: data=json.loads(raw)
                 except (ValueError,UnicodeDecodeError): raise APIError(400,"invalid JSON")
                 if not isinstance(data,dict): raise APIError(400,"JSON object required")
+            machine_page=re.fullmatch(r'/v1/dashboard/([A-Za-z0-9_-]{43})/machines(?:/([0-9a-f]{32}))?',route)
+            if machine_page:
+                manager=self.server.store.machines
+                if self.command=='GET' and not machine_page.group(2):return self.reply(200,{'machines':manager.list(machine_page.group(1))})
+                if self.command=='POST' and not machine_page.group(2):
+                    result=manager.create(machine_page.group(1),data)
+                    config={'url':self.server.store.settings.public_url,'id':result['id'],'machine_key':result['machine_key']}
+                    result['script']=(STATIC/'machine_agent.py').read_text().replace('CONFIG = None  # Filled only in the private downloaded copy.','CONFIG = '+repr(config))
+                    return self.reply(201,result)
+                if self.command=='POST' and machine_page.group(2):
+                    if set(data)!={'enabled'}:raise APIError(400,'only enabled is accepted')
+                    return self.reply(200,manager.enable(machine_page.group(1),machine_page.group(2),data['enabled']))
+            machine_report=re.fullmatch(r'/v1/machines/([0-9a-f]{32})/telemetry',route)
+            if machine_report and self.command=='POST':
+                auth=self.headers.get('Authorization','')
+                return self.reply(200,self.server.store.machines.ingest(auth[7:] if auth.startswith('Bearer ') else '',machine_report.group(1),data))
             dashboard=re.fullmatch(r'/v1/dashboard/([A-Za-z0-9_-]{43})',route)
             dashboard_archive=re.fullmatch(r'/v1/dashboard/([A-Za-z0-9_-]{43})/archive',route)
             if dashboard_archive and self.command=='POST':return self.reply(200,self.server.store.archive_dashboard_task(dashboard_archive.group(1),data.get('task_id'),data.get('archived',True)))
@@ -120,7 +136,7 @@ class Handler(BaseHTTPRequestHandler):
                 options=parse_qs(urlsplit(self.path).query)
                 trend_filter=options.get('trends',['1'])[0]
                 if trend_filter not in {'0','1'}:raise APIError(400,'invalid trend filter')
-                return self.reply(200,self.server.store.dashboard(dashboard.group(1),int(raw_offset),archive_filter=='1',options.get('status',['all'])[0],options.get('q',[''])[0],trend_filter=='1',options.get('task',[None])[0]))
+                return self.reply(200,self.server.store.machines.dashboard(dashboard.group(1),int(raw_offset),archive_filter=='1',options.get('status',['all'])[0],options.get('q',[''])[0],trend_filter=='1',options.get('task',[None])[0]))
             if dashboard_page and self.command in {'GET','HEAD'}:return self.reply(200,(STATIC/'dashboard.html').read_bytes(),'text/html; charset=utf-8')
             auth=self.headers.get("Authorization","")
             key=auth[7:] if auth.startswith("Bearer ") else ""

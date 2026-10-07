@@ -91,6 +91,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS limits(bucket TEXT PRIMARY KEY,count INTEGER NOT NULL,expires REAL NOT NULL);
             """)
 
+        from .machines import Machines
+        self.machines = Machines(self)
+
     @contextlib.contextmanager
     def db(self,read_only=False):
         c=sqlite3.connect(self.settings.database,timeout=5,isolation_level=None)
