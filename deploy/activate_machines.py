@@ -7,6 +7,7 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tarfile
@@ -15,7 +16,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path('/opt/endnote')
 BASE = 'c4504b2e4aa79d5b10d051827ee52a4d184891473494bf2f114dedfc26e021ac'
-SHA = 'fba311e6541f56d92accb35549d8e6a762ede1597b5d932d19ae2940b390a13e'
+SHA = 'f5b31f9f7184513090dec6ffe4f68288040c5b0ba2af9cbf12aead3b3b6c7800'
 
 def run(*args): return subprocess.check_output(args, text=True, stderr=subprocess.PIPE, timeout=30)
 def healthy(public=False):
@@ -54,7 +55,9 @@ def main():
     usage = shutil.disk_usage(ROOT)
     # This flag requires the owner's explicit one-release capacity exception.
     exception = '--approved-capacity-exception' in sys.argv[2:]
-    peak = len(raw)*2 + sum(len(v) for v in data.values())*3
+    database = Path("/var/lib/endnote/endnote.db")
+    db_size = database.stat().st_size; assert db_size < 64*1024**2
+    peak = len(raw)*2 + sum(len(v) for v in data.values())*3 + db_size*2
     reserve = 2*1024**3 if exception else max(2*1024**3, usage.total*.15)
     assert usage.free-peak > reserve
     stat = os.statvfs(ROOT); assert stat.f_favail > 4096
@@ -70,6 +73,12 @@ def main():
         path = release/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_bytes(value); path.chmod(0o644)
     ops = ROOT/'ops'/('machines-20261007-'+SHA[:12]); ops.mkdir(mode=0o700)
     receipt = {'release':SHA, 'previous':str(old), 'scope':'Optional machine monitor; additive machine table only; no credential, unit or ingress changes', 'capacity_exception':exception, 'free_bytes':usage.free, 'estimated_peak_bytes':peak}
+    backup = ops/'pre-machine.db'
+    with sqlite3.connect('file:'+str(database)+'?mode=ro',uri=True,timeout=5) as source, sqlite3.connect(backup) as destination:
+        source.backup(destination,pages=256,sleep=.01)
+        assert destination.execute('PRAGMA quick_check').fetchone()[0]=='ok'
+    backup.chmod(0o600)
+    receipt['database_backup']=str(backup)
     (ops/'release.json').write_text(json.dumps(receipt,indent=2))
     activated = False
     try:

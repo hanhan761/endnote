@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-SHA='fba311e6541f56d92accb35549d8e6a762ede1597b5d932d19ae2940b390a13e'
+SHA='f5b31f9f7184513090dec6ffe4f68288040c5b0ba2af9cbf12aead3b3b6c7800'
 UNIT=Path('/etc/systemd/system/endnote-machine.service')
 CONFIG=Path('/home/codex-admin/.config/endnote/workstation-machine.json')
 UNIT_TEXT='''[Unit]
@@ -24,6 +24,7 @@ Group=codex-admin
 ExecStart=/usr/bin/python3 /opt/endnote/current/endnote/web/machine_agent.py --config /home/codex-admin/.config/endnote/workstation-machine.json
 Restart=on-failure
 RestartSec=20
+RestartPreventExitStatus=2
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
@@ -54,7 +55,9 @@ def main():
     import re
     assert re.fullmatch(r'[0-9a-f]{32}',config['id']) and re.fullmatch(r'en_machine_[A-Za-z0-9_-]{43}',config['machine_key'])
     account=pwd.getpwnam('codex-admin')
-    CONFIG.parent.mkdir(parents=True,exist_ok=True)
+    if not CONFIG.parent.exists():
+        CONFIG.parent.mkdir(mode=0o700,parents=True)
+        os.chown(CONFIG.parent,account.pw_uid,account.pw_gid)
     CONFIG.write_bytes(raw);CONFIG.chmod(0o600);os.chown(CONFIG,account.pw_uid,account.pw_gid)
     UNIT.write_text(UNIT_TEXT);UNIT.chmod(0o644)
     try:

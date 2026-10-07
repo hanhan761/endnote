@@ -116,9 +116,13 @@ def main(config=None):
                 if response.status!=200:raise OSError('report refused')
             delay=15
         except HTTPError as error:
-            if error.code in {401,403,404}:print('Machine reporting stopped: credential disabled or invalid.',file=sys.stderr);return 2
-            delay=min(120,delay*2)
-            print('Machine reporting temporarily unavailable; retrying.',file=sys.stderr)
+            if error.code in {401,404}:print('Machine reporting stopped: credential invalid.',file=sys.stderr);return 2
+            if error.code==403:
+                delay=30
+                print('Machine reporting paused; waiting for permission.',file=sys.stderr)
+            else:
+                delay=min(120,delay*2)
+                print('Machine reporting temporarily unavailable; retrying.',file=sys.stderr)
         except (OSError,ValueError):
             delay=min(120,delay*2)
             print('Machine reporting temporarily unavailable; retrying.',file=sys.stderr)
