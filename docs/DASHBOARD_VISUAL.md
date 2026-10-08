@@ -24,3 +24,8 @@ Candidate SHA-256: 41d0ba792836a763c007e32a896a7e2f9df67c1815e8fd2c83c6420100970
 Packaging: scripts/package_dashboard_polish.py.
 Activation: deploy/activate_dashboard_polish.py.
 The previous release is retained; the activation script rolls back on failure.
+
+Production verification: immutable CSS-only release activated successfully; 62 seconds
+of observation with four origin/public health passes. Public CSS matches the exact
+local artifact; JavaScript checksum unchanged; both machine reports remain online.
+No browser screenshot verification was possible.
