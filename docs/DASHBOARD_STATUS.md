@@ -12,3 +12,7 @@ Candidate SHA-256: 9769f126b202b02af2f7e47f5f9dad7802f1aefcd3dd40a126b1ff57686a3
 Validation: Python unittest 37 passed, Node dashboard interactions 8 passed;
 CSS parser validation passed. Browser preview provider remains unavailable;
 no rendered screenshot verification is claimed.
+
+Production verified: four origin/public health passes across 62 seconds; public
+CSS exactly matches the release. Both machine reports remain online. Previous
+immutable release retained for rollback.
