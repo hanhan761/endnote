@@ -12,3 +12,7 @@ Release SHA-256: ed57d225f12d183dacde13b34bb6a4cb13941e410ed8a9365e2e54eab35c702
 Validation: 37 Python tests and 8 dashboard interaction checks passed; CSS and
 activation syntax validated. Browser preview provider unavailable; no actual
 rendered screenshots or visual browser acceptance are claimed.
+
+Production verified: 63 seconds with four origin/public health checks, public CSS
+matched the exact local artifact, and both machines stayed online. Previous
+release retained for rollback.
