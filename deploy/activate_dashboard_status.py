@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path('/opt/endnote')
 BASE = '41d0ba792836a763c007e32a896a7e2f9df67c1815e8fd2c83c642010097029b'
-SHA = '196626a85d1f6dae2c3ff66f9f8ee0b3eb9c9d6d158ca8e0d8d53b075642a80f'
+SHA = '9769f126b202b02af2f7e47f5f9dad7802f1aefcd3dd40a126b1ff57686a3999'
 
 def run(*args): return subprocess.check_output(args, text=True, stderr=subprocess.PIPE, timeout=30)
 def healthy(public=False):

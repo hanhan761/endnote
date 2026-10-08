@@ -23,6 +23,7 @@ dialog{position:fixed;inset:0 0 0 auto;margin:0;width:480px;max-width:100%;heigh
 @media(forced-colors:active){.cluster-row td:first-child{border-left-color:CanvasText}.dial-track{stroke:GrayText}.dial-value{stroke:Highlight}.resource-dial text{fill:CanvasText}.badge:before,.live-dot{background:CanvasText}.tab.active:after{background:Highlight}}
 
 /* Status signals: unique silhouettes + semantic color, independent of cluster color. */
+.name-width{width:40%}.state-width{width:12%}
 .badge{--status-color:#526073;--status-bg:#eef1f5;display:inline-flex;align-items:center;gap:6px;min-height:25px;padding:3px 8px;border:1px solid transparent;border-radius:6px;background:var(--status-bg);color:var(--status-color);font-size:11px;font-weight:550;line-height:1.5;vertical-align:middle}
 .badge::before{content:"";display:block;flex:0 0 12px;width:12px;height:12px;border-radius:0;background:currentColor;box-sizing:border-box}
 .badge.running{--status-color:#255eb7;--status-bg:#e9f1ff;color:var(--status-color)}
