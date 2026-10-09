@@ -37,3 +37,11 @@ throughput benchmark; HTTPS, server and browser work are additional to sampling.
 Public JavaScript matches the candidate. Machine reads are isolated from task
 refreshes, hidden tabs suspend polling, requests do not overlap, and collectors
 back off on failures. No browser screenshot validation was available.
+
+Follow-up cadence check: a fixed 25.78-second counter window observed 4090 at
+0.81 reports/s and 3090 at 0.12 reports/s; one-second cadence is a target, not a
+guaranteed sustained network rate. A subsequent direct report using the actual
+collector User-Agent succeeded in 1.16 seconds. A diagnostic probe using Python
+default User-Agent was refused by Cloudflare 1010; this does not establish a
+collector authentication failure. Both machines remained online. No requests
+are overlapped or queued to force a rate faster than network response time.
