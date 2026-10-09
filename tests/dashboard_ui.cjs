@@ -21,16 +21,19 @@ function text(node){return (node.textContent||"")+node.children.map(text).join("
 async function settle(){for(let i=0;i<20;i++)await Promise.resolve();}
 function rows(app){return app.nodes.tasks.children.filter(row=>row.dataset.taskId);}
 function setup(){
+ const pending=[];let hold=false,readStatus=200,retryAfter="",clock=Date.now();
+ class Clock extends Date{constructor(...args){super(...(args.length?args:[clock]));}static now(){return clock;}}
  const nodes=Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(m=>[m[1],new Element("div")]));
  const timers=new Map(),intervals=[],calls=[],events={},archived=new Set(),machines=[];let tick=0;
  const tasks=[{id:"1".repeat(32),name:"<img src=x onerror=alert(1)> seed42",status:"running",created:800,heartbeat:995,heartbeat_received:true,heartbeat_timeout:300,heartbeat_enabled:true,runtime_timeout:7200,outage:false,finished:null,metrics:{loss:.2},trend_metric:"loss",trend:[{time:900,value:.5},{time:950,value:.2}],notifications:[{kind:"started",state:"sent",created:800}]},{id:"2".repeat(32),name:"已成功的实验",status:"succeeded",created:700,heartbeat:900,heartbeat_received:true,heartbeat_timeout:300,heartbeat_enabled:true,runtime_timeout:null,outage:false,finished:900,metrics:{},trend_metric:null,trend:[],notifications:[{kind:"succeeded",state:"sent",created:900}]}];
  const document={getElementById:id=>nodes[id],createElement:tag=>new Element(tag),createElementNS:(_,tag)=>new Element(tag),body:new Element("body"),hidden:false,addEventListener:(name,fn)=>events[name]=fn};
- const fetch=async(url,options={})=>{calls.push({url,options});if(options.method==="POST"){const data=JSON.parse(options.body);if(url.includes("/machines")){if(data.name){machines.push({id:"fixture-machine",name:data.name,state:"waiting",received:null,metrics:{}});return{ok:true,json:async()=>({id:"fixture-machine",script:"print(1)"})};}const machine=machines.find(m=>url.endsWith("/"+m.id));if(machine)machine.state=data.enabled?"online":"disabled";return{ok:true,json:async()=>({ok:true})};}if(data.archived)archived.add(data.task_id);else archived.delete(data.task_id);return{ok:true,json:async()=>({ok:true})};}
+ const fetch=async(url,options={})=>{calls.push({url,options});if(hold){await new Promise((resolve,reject)=>{pending.push({url,resolve,reject});options.signal?.addEventListener("abort",()=>reject(Object.assign(new Error("aborted"),{name:"AbortError"})),{once:true});});}if(options.method==="POST"){const data=JSON.parse(options.body);if(url.includes("/machines")){if(data.name){machines.push({id:"fixture-machine",name:data.name,state:"waiting",received:null,metrics:{}});return{ok:true,json:async()=>({id:"fixture-machine",script:"print(1)"})};}const machine=machines.find(m=>url.endsWith("/"+m.id));if(machine)machine.state=data.enabled?"online":"disabled";return{ok:true,json:async()=>({ok:true})};}if(data.archived)archived.add(data.task_id);else archived.delete(data.task_id);return{ok:true,json:async()=>({ok:true})};}
+  if(readStatus!==200)return{ok:false,status:readStatus,headers:{get:()=>retryAfter},json:async()=>({})};
   if(url.endsWith("/machines"))return{ok:true,json:async()=>({machines})};
   const params=new URL(url,"https://fixture.invalid").searchParams;let shown=tasks.filter(t=>archived.has(t.id)===(params.get("archived")==="1"));if(params.get("task"))shown=shown.filter(t=>t.id===params.get("task"));
   const data={machines,tasks:shown,total:shown.length,now:1000,summary:{running:1,waiting:0,outage:0,succeeded:archived.size?0:1,failed:0,cancelled:0},archived_count:archived.size,has_more:false,blocked:false};return{ok:true,json:async()=>data};};
- const context=vm.createContext({document,window:{addEventListener:(name,fn)=>events[name]=fn},location:{pathname:"/endnote/dashboard/"+"x".repeat(43)},fetch,AbortController,URLSearchParams,Date,Blob,URL:{createObjectURL:()=>"blob:fixture",revokeObjectURL:()=>{}},setTimeout:(fn,delay)=>{timers.set(++tick,{fn,delay});return tick;},clearTimeout:id=>timers.delete(id),setInterval:(fn,delay)=>{intervals.push({fn,delay});return intervals.length;}});
- vm.runInContext(script,context);return{nodes,tasks,machines,timers,intervals,calls,events,document,archived};
+ const context=vm.createContext({document,window:{addEventListener:(name,fn)=>events[name]=fn},location:{pathname:"/endnote/dashboard/"+"x".repeat(43)},fetch,AbortController,URLSearchParams,Date:Clock,Blob,URL:{createObjectURL:()=>"blob:fixture",revokeObjectURL:()=>{}},setTimeout:(fn,delay)=>{timers.set(++tick,{fn,delay});return tick;},clearTimeout:id=>timers.delete(id),setInterval:(fn,delay)=>{intervals.push({fn,delay});return intervals.length;}});
+ vm.runInContext(script,context);return{nodes,tasks,machines,timers,intervals,calls,events,document,archived,pending,advance:ms=>{clock+=ms;},status:(status,after="")=>{readStatus=status;retryAfter=after;},hold:()=>{hold=true;},release:()=>{hold=false;for(const request of pending.splice(0))request.resolve();}};
 }
 test("compact status rows render safe text and update automatically every five seconds",async()=>{
  const app=setup();await settle();assert.equal(rows(app).length,2);assert.ok(text(app.nodes.tasks).includes("<img src=x onerror=alert(1)>"));assert.ok(!html.includes('id="refresh"'));assert.equal(app.intervals[0].delay,5000);assert.ok(app.calls[0].url.includes("trends=0"));
@@ -90,4 +93,55 @@ test("machine refresh uses the lightweight endpoint every second without rebuild
  assert.ok(app.calls.at(-1).url.endsWith("/machines"));assert.equal(app.nodes.summary.children.length,1);assert.equal(rows(app)[0],taskRows[0]);
  app.machines[0].metrics.cpu_percent=60;await poll.fn();await settle();assert.ok(text(app.nodes.summary).includes("60%"));
  app.document.hidden=true;const count=app.calls.length;await poll.fn();await settle();assert.equal(app.calls.length,count);
+});
+
+
+test("slow machine request yields to task refresh without overlapping dashboard reads",async()=>{
+ const app=setup();await settle();app.hold();
+ app.intervals.find(t=>t.delay===1000).fn();await settle();
+ const machineCall=app.calls.at(-1);assert.ok(machineCall.url.endsWith("/machines"));
+ app.intervals.find(t=>t.delay===5000).fn();await settle();
+ assert.ok(machineCall.options.signal.aborted,"task updates should cancel the obsolete machine read");
+ app.release();await settle();assert.equal(text(app.nodes.notice),"");
+});
+
+test("transient read timeout retries promptly and retains the last successful overview",async()=>{
+ const app=setup();await settle();const previous=rows(app);app.hold();
+ app.intervals.find(t=>t.delay===5000).fn();await settle();
+ const timeout=[...app.timers.values()].find(t=>t.delay===8000);assert.ok(timeout);timeout.fn();await settle();
+ assert.equal(rows(app)[0],previous[0]);assert.equal(text(app.nodes.notice),"","one missed update must not replace the overview with a warning");
+ const retry=[...app.timers.values()].find(t=>t.delay===1000);assert.ok(retry,"retry promptly instead of waiting for the next fixed poll");
+ app.release();retry.fn();await settle();assert.ok(!app.nodes.connection.className.includes("stale"));
+});
+
+
+test("persistent outage is shown honestly and recovery clears it",async()=>{
+ const app=setup();await settle();app.advance(31000);app.status(503);
+ app.intervals.find(t=>t.delay===5000).fn();await settle();
+ assert.ok(text(app.nodes.notice).includes("更新已延迟"));assert.ok(app.nodes.connection.className.includes("stale"));
+ const retry=[...app.timers.values()].find(t=>t.delay===1000);assert.ok(retry);
+ app.status(200);retry.fn();await settle();assert.equal(text(app.nodes.notice),"");assert.ok(!app.nodes.connection.className.includes("stale"));
+});
+
+test("rate-limited refresh respects retry delay rather than polling into the limit",async()=>{
+ const app=setup();await settle();app.status(429,"45");
+ app.intervals.find(t=>t.delay===5000).fn();await settle();
+ const count=app.calls.length;const retry=[...app.timers.values()].find(t=>t.delay===45000);assert.ok(retry);
+ for(const poll of app.intervals)poll.fn();await settle();assert.equal(app.calls.length,count);
+ app.status(200);retry.fn();await settle();assert.equal(app.calls.length,count+1);
+});
+
+test("machine failures back off while task reads remain available",async()=>{
+ const app=setup();await settle();const poll=app.intervals.find(t=>t.delay===1000);
+ app.status(503);await poll.fn();await settle();const count=app.calls.length;
+ await poll.fn();await settle();assert.equal(app.calls.length,count);
+ app.advance(1000);await poll.fn();await settle();assert.equal(app.calls.length,count+1);
+ app.advance(1000);await poll.fn();await settle();assert.equal(app.calls.length,count+1);
+ app.status(200);app.intervals.find(t=>t.delay===5000).fn();await settle();assert.equal(app.calls.length,count+2);
+});
+
+test("invalid dashboard link is explicit and stops automatic requests",async()=>{
+ const app=setup();await settle();app.status(404);app.intervals.find(t=>t.delay===5000).fn();await settle();
+ assert.ok(text(app.nodes.notice).includes("链接无效"));const count=app.calls.length;
+ for(const poll of app.intervals)poll.fn();await settle();assert.equal(app.calls.length,count);
 });

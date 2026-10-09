@@ -6,6 +6,9 @@ const labels={running:"运行中",queued:"排队中",waiting:"待启动",outage:
 const reasons={started:"开始",succeeded:"成功",failed:"失败",heartbeat_timeout:"中断",runtime_timeout:"超时"};
 const mailStates={pending:"待发",sent:"已发送",dead:"发送失败",blocked:"已屏蔽",cancelled:"已取消"};
 let snapshot=null,view="all",offset=0,query="",loading=false,revision=0,controller=null,searchTimer=null,detailId=null,detailLoading=false,lastUpdated=0,clockOffset=0;
+let retryTimer=null,failures=0,invalidLink=false,detailController=null;
+let machineLoading=false,machineController=null,machineFailures=0,machineRetryAt=0,machineUpdated=0;
+const STALE_AFTER=30000;
 function el(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
 function now(){return Date.now()/1000+clockOffset;}
 function duration(seconds){seconds=Math.max(0,Math.floor(seconds));if(seconds<60)return seconds+" 秒";if(seconds<3600)return Math.floor(seconds/60)+" 分 "+seconds%60+" 秒";if(seconds<86400)return Math.floor(seconds/3600)+" 时 "+Math.floor(seconds%3600/60)+" 分";return Math.floor(seconds/86400)+" 天 "+Math.floor(seconds%86400/3600)+" 时";}
@@ -14,7 +17,15 @@ function state(task){return task.outage?"outage":task.status==="running"&&task.m
 function value(number){if(!Number.isFinite(number))return "—";return Number.isInteger(number)?String(number):Math.abs(number)<.0001&&number!==0?number.toExponential(2):Number(number.toPrecision(5)).toString();}
 function connection(online){$("connection").className="live-status"+(online?"":" stale");$("live-text").textContent=online?"实时连接":"连接暂不可用";}
 function showNotice(message=""){$("notice").textContent=message;}
-async function getData(params,signal){const owned=signal?null:new AbortController();const timeout=owned?setTimeout(()=>owned.abort(),8000):null;try{const response=await fetch(endpoint+"?"+new URLSearchParams(params),{cache:"no-store",referrerPolicy:"no-referrer",signal:signal||owned.signal});if(!response.ok)throw new Error(response.status===404?"链接无效，请使用邮件中的完整链接。":response.status===429?"刷新频率达到限额，正在等待自动重试。":"连接暂不可用，显示的是上次更新结果。");return await response.json();}finally{if(timeout)clearTimeout(timeout);}}
+function responseError(response){const error=new Error(response.status===404?"链接无效，请使用邮件中的完整链接。":response.status===429?"刷新频率达到限额，正在等待自动重试。":"连接暂不可用，显示的是上次更新结果。");error.status=response.status;error.retryAfter=Math.min(120000,Math.max(0,Number(response.headers?.get("Retry-After"))||0)*1000);return error;}
+async function getData(params,signal){const owned=signal?null:new AbortController();const timeout=owned?setTimeout(()=>owned.abort(),8000):null;try{const response=await fetch(endpoint+"?"+new URLSearchParams(params),{cache:"no-store",referrerPolicy:"no-referrer",signal:signal||owned.signal});if(!response.ok)throw responseError(response);return await response.json();}finally{if(timeout)clearTimeout(timeout);}}
+function cancelMachineRead(){if(machineController)machineController.abort();}
+function reconnect(error){
+ connection(false);$("live-text").textContent=snapshot?"正在重连":"正在连接";
+ if(!snapshot||Date.now()-lastUpdated>=STALE_AFTER)showNotice(snapshot?"数据更新已延迟，正在自动重新连接。":"暂时无法加载，正在自动重新连接。");
+ const delay=Math.max(error.status===429?30000:Math.min(30000,1000*2**Math.min(failures-1,5)),error.retryAfter||0);
+ retryTimer=setTimeout(()=>{retryTimer=null;if(!document.hidden)refresh();},delay);
+}
 function capacity(used,total){return Number.isFinite(used)&&Number.isFinite(total)&&total>0?Math.min(100,100*used/total):null;}
 function size(bytes){if(!Number.isFinite(bytes))return "—";return bytes>=1024**4?(bytes/1024**4).toFixed(1)+" TB":(bytes/1024**3).toFixed(1)+" GB";}
 function capacityText(used,total){if(!Number.isFinite(used)||!Number.isFinite(total))return "容量暂无数据";const unit=total>=1024**4?1024**4:1024**3;return (used/unit).toFixed(1)+" / "+(total/unit).toFixed(1)+(unit===1024**4?" TB":" GB");}
@@ -36,26 +47,55 @@ const elapsed=el("td",duration((task.finished||now())-task.created),"duration-co
 const mail=el("td",undefined,"mail-col"),notice=task.notifications[0];const mailText=notice?(reasons[notice.kind]||"指标")+" · "+(mailStates[notice.state]||notice.state):"—";mail.title=notice?date(notice.created)+"；已发送表示 SMTP 已接受，不保证进入收件箱":"暂无通知";mail.append(el("span",mailText,"mail-inline"+(notice?.state==="dead"?" error":"")));
 const action=el("td");if(["succeeded","failed","cancelled"].includes(task.status)){const button=el("button",view==="archived"?"恢复":"归档","archive-button");button.title=view==="archived"?"恢复到总览":"从默认总览移除，可以恢复";button.type="button";button.onclick=()=>archive(task,button,view!=="archived");action.append(button);}row.append(title,statusCell,heartbeat,elapsed,metrics,mail,action);$("tasks").append(row);}}
 $("result-count").textContent=tasks.length?"显示 "+(offset+1)+"–"+(offset+tasks.length)+" / "+snapshot.total+" 个任务 · 本页 "+groups.length+" 组":"0 个任务";$("previous").disabled=offset===0;$("next").disabled=!snapshot.has_more;$("page").textContent=(Math.floor(offset/200)+1)+" / "+Math.max(1,Math.ceil(snapshot.total/200));$("updated").textContent="最后更新 "+new Date(lastUpdated).toLocaleTimeString();}
-async function refresh(force=false){if(!endpoint){showNotice("请打开邮件里的完整状态链接。");return;}if(loading&&!force)return;if(controller)controller.abort();controller=new AbortController();const current=++revision,abort=controller;loading=true;const timer=setTimeout(()=>abort.abort(),8000);
-try{const data=await getData({offset,status:view==="archived"?"all":view,archived:view==="archived"?"1":"0",q:query,trends:"0"},abort.signal);if(current!==revision)return;snapshot=data;clockOffset=data.now-Date.now()/1000;lastUpdated=Date.now();if(offset>0&&!data.tasks.length){offset=Math.max(0,offset-200);loading=false;return refresh(true);}connection(true);showNotice(data.blocked?"此邮箱已屏蔽后续邮件，任务记录仍可查看和归档。":"");renderSummary();renderTabs();renderTable();if(detailId)refreshDetail();}catch(error){if(current!==revision)return;connection(false);showNotice(error.name==="AbortError"?"本次更新超时，保留上次结果，稍后自动重试。":error.message);}finally{clearTimeout(timer);if(current===revision)loading=false;}}
+async function refresh(force=false){
+ if(!endpoint){showNotice("请打开邮件里的完整状态链接。");return;}
+ if(invalidLink||(loading&&!force)||(!force&&retryTimer!==null))return;
+ clearTimeout(retryTimer);retryTimer=null;
+ if(controller)controller.abort();cancelMachineRead();if(detailController)detailController.abort();
+ controller=new AbortController();const current=++revision,abort=controller;loading=true;
+ const timer=setTimeout(()=>abort.abort(),8000);let succeeded=false;
+ try{
+  const data=await getData({offset,status:view==="archived"?"all":view,archived:view==="archived"?"1":"0",q:query,trends:"0"},abort.signal);
+  if(current!==revision)return;
+  snapshot=data;clockOffset=data.now-Date.now()/1000;lastUpdated=Date.now();machineUpdated=lastUpdated;
+  failures=0;machineFailures=0;machineRetryAt=0;
+  if(offset>0&&!data.tasks.length){offset=Math.max(0,offset-200);loading=false;return refresh(true);}
+  connection(true);showNotice(data.blocked?"此邮箱已屏蔽后续邮件，任务记录仍可查看和归档。":"");
+  renderSummary();renderTabs();renderTable();succeeded=true;
+ }catch(error){
+  if(current!==revision)return;
+  if([400,401,403,404].includes(error.status)){invalidLink=true;connection(false);showNotice(error.message);}
+  else{failures++;reconnect(error);}
+ }finally{
+  clearTimeout(timer);if(current===revision){loading=false;if(succeeded&&detailId)refreshDetail();}
+ }
+}
 async function archive(task,button,archived){button.disabled=true;const abort=new AbortController();const timeout=setTimeout(()=>abort.abort(),8000);try{const response=await fetch(endpoint+"/archive",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task_id:task.id,archived}),referrerPolicy:"no-referrer",signal:abort.signal});if(!response.ok){let message="整理失败，请稍后重试。";try{message=(await response.json()).error||message;}catch{}throw new Error(message);}if(detailId===task.id)closeDetail();await refresh(true);}catch(error){showNotice(error.message);}finally{clearTimeout(timeout);button.disabled=false;}}
 function detailField(label,text){const field=el("div",undefined,"detail-field");field.append(el("span",label),el("strong",text));return field;}
 function chart(task){if(task.trend_metric==="endnote_queued")task={...task,trend_metric:null,trend:[]};const box=el("section",undefined,"chart");box.append(el("div",task.trend_metric?task.trend_metric+" · 指标趋势":"指标趋势","section-label"));if(task.trend.length<2){box.append(el("p","历史数据不足，至少需要两个采样点。","chart-caption"));return box;}const values=task.trend.map(p=>p.value),lo=Math.min(...values),hi=Math.max(...values),start=task.trend[0].time,end=task.trend.at(-1).time,svg=document.createElementNS("http://www.w3.org/2000/svg","svg");svg.setAttribute("viewBox","0 0 420 120");svg.setAttribute("role","img");svg.setAttribute("aria-label",task.trend_metric+" 趋势");for(const y of [20,60,100]){const line=document.createElementNS(svg.namespaceURI,"line");line.setAttribute("x1","0");line.setAttribute("x2","420");line.setAttribute("y1",String(y));line.setAttribute("y2",String(y));line.setAttribute("stroke","#edf1e7");svg.append(line);}const graph=document.createElementNS(svg.namespaceURI,"polyline");graph.setAttribute("points",task.trend.map(p=>[4+412*(p.time-start)/(end-start||1),hi===lo?60:108-96*(p.value-lo)/(hi-lo)].join(",")).join(" "));graph.setAttribute("fill","none");graph.setAttribute("stroke","#668656");graph.setAttribute("stroke-width","2");svg.append(graph);box.append(svg,el("div",date(start)+" → "+date(end)+" · "+task.trend.length+" 个采样点","chart-caption"));return box;}
 function renderDetail(task){$("detail-name").textContent=task.name;const content=$("detail-content");content.replaceChildren(el("div","#"+task.id,"detail-id"));content.append(el("span",labels[state(task)],"badge "+state(task)));const meta=el("div",undefined,"detail-meta");meta.append(detailField("创建时间",date(task.created)),detailField("运行时长",duration((task.finished||now())-task.created)),detailField("最后上报",task.heartbeat_received?date(task.heartbeat):"等待首次上报"),detailField("失联阈值",task.heartbeat_enabled?duration(task.heartbeat_timeout):"未启用"));if(task.runtime_timeout)meta.append(detailField("运行时长上限",duration(task.runtime_timeout)));if(task.finished)meta.append(detailField("结束时间",date(task.finished)));content.append(meta);const metrics=el("div",undefined,"detail-metrics");for(const [key,val] of Object.entries(task.metrics).filter(([name])=>name!=="endnote_queued")){const item=el("div",undefined,"detail-metric");item.append(el("span",key+" "),el("b",value(val)));metrics.append(item);}if(metrics.childElementCount)content.append(metrics);content.append(chart(task));const notices=el("section",undefined,"detail-notices");notices.append(el("div","通知记录","section-label"));for(const notice of task.notifications){const item=el("div",undefined,"notification");item.append(el("span",(reasons[notice.kind]||"指标达标")+" · "+(mailStates[notice.state]||notice.state)),el("span",date(notice.created)));notices.append(item);}content.append(notices);}
 function openDetail(task){detailId=task.id;renderDetail({...task,trend:[]});if(!$("detail").open)$("detail").showModal();refreshDetail();}
-function closeDetail(){detailId=null;if($("detail").open)$("detail").close();}
-async function refreshDetail(){if(!detailId||detailLoading)return;const selected=detailId;detailLoading=true;try{const data=await getData({task:selected,archived:view==="archived"?"1":"0",trends:"1"});if(detailId!==selected)return;if(data.tasks[0])renderDetail(data.tasks[0]);else closeDetail();}catch{}finally{detailLoading=false;}}
+function closeDetail(){if(detailController)detailController.abort();detailId=null;if($("detail").open)$("detail").close();}
+async function refreshDetail(){if(!detailId||detailLoading||loading||invalidLink)return;cancelMachineRead();const selected=detailId,abort=new AbortController();detailController=abort;detailLoading=true;const timer=setTimeout(()=>abort.abort(),8000);try{const data=await getData({task:selected,archived:view==="archived"?"1":"0",trends:"1"},abort.signal);if(detailId!==selected||abort.signal.aborted)return;if(data.tasks[0])renderDetail(data.tasks[0]);else closeDetail();}catch{}finally{clearTimeout(timer);if(detailController===abort)detailController=null;detailLoading=false;}}
 $("search").oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{query=$("search").value.trim();offset=0;refresh(true);},250);};
 $("previous").onclick=()=>{offset=Math.max(0,offset-200);refresh(true);};$("next").onclick=()=>{offset+=200;refresh(true);};$("close-detail").onclick=closeDetail;$("detail").onclose=()=>{detailId=null;};
-document.addEventListener("visibilitychange",()=>{if(!document.hidden)refresh();});window.addEventListener("online",()=>refresh(true));window.addEventListener("offline",()=>{connection(false);showNotice("网络已断开，显示的是上次更新结果。恢复后自动重新连接。");});
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)refresh(true);});window.addEventListener("online",()=>refresh(true));window.addEventListener("offline",()=>{connection(false);showNotice("网络已断开，显示的是上次更新结果。恢复后自动重新连接。");});
 setupMachines();renderTabs();refresh();setInterval(()=>{if(!document.hidden)refresh();},5000);
 
-let machineLoading=false;
 async function refreshMachines(){
- if(!endpoint||!snapshot||machineLoading||loading||document.hidden)return;
- machineLoading=true;const generation=revision,abort=new AbortController(),timer=setTimeout(()=>abort.abort(),8000);
- try{const response=await fetch(endpoint+"/machines",{cache:"no-store",referrerPolicy:"no-referrer",signal:abort.signal});if(!response.ok)throw new Error("machine refresh failed");const data=await response.json();if(generation!==revision)return;snapshot={...snapshot,machines:data.machines};renderSummary();}
- catch{$("machine-count").textContent="资源更新暂不可用 · 自动重试";}
- finally{clearTimeout(timer);machineLoading=false;}
+ if(!endpoint||!snapshot||invalidLink||machineLoading||loading||detailLoading||retryTimer!==null||document.hidden||Date.now()<machineRetryAt)return;
+ machineLoading=true;const generation=revision,abort=new AbortController();machineController=abort;
+ let timedOut=false;const timer=setTimeout(()=>{timedOut=true;abort.abort();},8000);
+ try{
+  const response=await fetch(endpoint+"/machines",{cache:"no-store",referrerPolicy:"no-referrer",signal:abort.signal});
+  if(!response.ok)throw responseError(response);
+  const data=await response.json();if(generation!==revision||abort.signal.aborted)return;
+  snapshot={...snapshot,machines:data.machines};machineUpdated=Date.now();machineFailures=0;machineRetryAt=0;renderSummary();
+ }catch(error){
+  // A task/filter/detail read supersedes this sample; cancellation is not an outage.
+  if(generation!==revision||(abort.signal.aborted&&!timedOut))return;
+  machineFailures++;machineRetryAt=Date.now()+Math.max(error.status===429?30000:Math.min(30000,1000*2**Math.min(machineFailures-1,5)),error.retryAfter||0);
+  if(Date.now()-machineUpdated>=STALE_AFTER)$("machine-count").textContent="资源数据更新延迟 · 正在重连";
+ }finally{clearTimeout(timer);if(machineController===abort)machineController=null;machineLoading=false;}
 }
 setInterval(refreshMachines,1000);
