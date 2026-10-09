@@ -14,8 +14,8 @@ import time
 from urllib.request import Request, urlopen
 
 ROOT = Path('/opt/endnote')
-BASE = 'ed57d225f12d183dacde13b34bb6a4cb13941e410ed8a9365e2e54eab35c702a'
-SHA = 'ea16a66fb461aad8a5ae9337005f29804389f3e91746819c85e01cb797b51154'
+BASE = '072cd17720043c4db66d8159dec066be4d0202380936b89af4d5a3c61e1b4f23'
+SHA = '42f9703f949b6bdfac5851efa241648ccf3e0550ba47d3f873a40c55b6721483'
 
 def run(*args): return subprocess.check_output(args, text=True, stderr=subprocess.PIPE, timeout=30)
 def healthy(public=False):

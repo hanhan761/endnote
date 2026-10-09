@@ -2,9 +2,10 @@
 import gzip,hashlib,io,json,tarfile
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
-BASE='ed57d225f12d183dacde13b34bb6a4cb13941e410ed8a9365e2e54eab35c702a'
-raw=(ROOT/'dist/endnote-quiet-20261008.tar.gz').read_bytes()
-assert hashlib.sha256(raw).hexdigest()==BASE
+BASE='072cd17720043c4db66d8159dec066be4d0202380936b89af4d5a3c61e1b4f23'
+BASE_ARCHIVE_SHA='56a3e2c20eb6022ae1cf0c21ae776ed63eebe2d2d7e3f6bd58b11bbb8b68defb'
+raw=(ROOT/'dist/endnote-current-072cd177.tar.gz').read_bytes()
+assert hashlib.sha256(raw).hexdigest()==BASE_ARCHIVE_SHA
 with tarfile.open(fileobj=io.BytesIO(raw),mode='r:gz') as archive:
     files={m.name:archive.extractfile(m).read() for m in archive.getmembers()}
 manifest=json.loads(files.pop('MANIFEST.json'))
