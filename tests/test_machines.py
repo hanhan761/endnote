@@ -48,12 +48,21 @@ class MachineTests(unittest.TestCase):
         with self.assertRaises(APIError):self.manager.create(self.token,{'name':'x\nheader'})
     def test_bounded_report_rate_and_machine_count(self):
         one=self.create()
-        for _ in range(12):self.manager.ingest(one['machine_key'],one['id'],{})
+        for _ in range(90):self.manager.ingest(one['machine_key'],one['id'],{})
         with self.assertRaises(APIError) as e:self.manager.ingest(one['machine_key'],one['id'],{})
         self.assertEqual(e.exception.status,429)
         for index in range(1,12):self.now+=3601;self.create('Machine '+str(index))
         self.now+=3601
         with self.assertRaises(APIError):self.create('Too many')
+    def test_one_second_reports_remain_bounded_and_latest_only(self):
+        one=self.create();self.assertEqual(one['interval'],1)
+        for tick in range(180):
+            self.manager.ingest(one['machine_key'],one['id'],{'cpu_percent':tick%100})
+            self.now+=1
+        self.assertEqual(len(self.manager.list(self.token)),1)
+        self.assertEqual(self.manager.list(self.token)[0]['metrics']['cpu_percent'],79)
+        with self.store.db() as c:self.assertEqual(c.execute('SELECT count(*) FROM machines').fetchone()[0],1)
+
     def test_sample_cpu_delta_and_missing_gpu(self):
         with patch.object(Collector,'cpu_times',side_effect=[(30,100),(40,200)]),patch.object(Collector,'memory',return_value=(1000,500)),patch.object(Collector,'temperature',return_value=None),patch('endnote.web.machine_agent.gpu_metrics',return_value=[]):
             metric=Collector().sample();self.assertEqual(metric['cpu_percent'],90);self.assertIsNone(metric['cpu_temperature']);self.assertEqual(metric['gpus'],[])

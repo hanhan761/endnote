@@ -29,7 +29,7 @@ class Machines:
             if c.execute('SELECT count(*) FROM machines').fetchone()[0]>=2000:raise APIError(429,'machine capacity reached')
             key='en_machine_'+secrets.token_urlsafe(32);machine_id=secrets.token_hex(16)
             c.execute('INSERT INTO machines(id,recipient_hash,name,key_hash,created) VALUES(?,?,?,?,?)',(machine_id,owner,name,digest(key),self.store.clock()))
-        return {'id':machine_id,'name':name,'machine_key':key,'interval':15}
+        return {'id':machine_id,'name':name,'machine_key':key,'interval':1}
     def list(self,token):
         with self.store.db(read_only=True) as c:
             owner=self.access(c,token);now=self.store.clock()
@@ -75,7 +75,7 @@ class Machines:
             row=c.execute('SELECT enabled FROM machines WHERE id=? AND key_hash=?',(machine_id,digest(key))).fetchone()
             if not row:raise APIError(401,'invalid machine credential')
             if not row[0]:raise APIError(403,'machine reporting disabled')
-            self.store.limit(c,'machine-report:'+machine_id,12,60)
+            self.store.limit(c,'machine-report:'+machine_id,90,60)
             c.execute('UPDATE machines SET received=?,payload=? WHERE id=?',(self.store.clock(),json.dumps(payload,allow_nan=False),machine_id))
         return {'ok':True}
 

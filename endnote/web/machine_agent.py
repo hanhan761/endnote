@@ -106,7 +106,7 @@ def main(config=None):
     machine=config.get('id','');key=config.get('machine_key','')
     import re
     if not re.fullmatch(r'[0-9a-f]{32}',machine) or not key.startswith('en_machine_'):parser.error('invalid private configuration')
-    opener=build_opener(NoRedirect);delay=15
+    opener=build_opener(NoRedirect);delay=1
     while True:
         started=time.monotonic()
         try:
@@ -114,20 +114,20 @@ def main(config=None):
             request=Request(base+'/v1/machines/'+machine+'/telemetry',payload,{'Content-Type':'application/json','Authorization':'Bearer '+key,'User-Agent':'endnote-machine/1'},method='POST')
             with opener.open(request,timeout=8) as response:
                 if response.status!=200:raise OSError('report refused')
-            delay=15
+            delay=1
         except HTTPError as error:
             if error.code in {401,404}:print('Machine reporting stopped: credential invalid.',file=sys.stderr);return 2
             if error.code==403:
                 delay=30
                 print('Machine reporting paused; waiting for permission.',file=sys.stderr)
             else:
-                delay=min(120,delay*2)
+                delay=min(120,max(5,delay*2))
                 print('Machine reporting temporarily unavailable; retrying.',file=sys.stderr)
         except (OSError,ValueError):
             delay=min(120,delay*2)
             print('Machine reporting temporarily unavailable; retrying.',file=sys.stderr)
         if args.once:return 0
-        time.sleep(max(1,delay-(time.monotonic()-started)))
+        time.sleep(max(.05,delay-(time.monotonic()-started)))
 
 if __name__=='__main__':
     try:sys.exit(main(CONFIG))
