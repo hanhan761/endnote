@@ -196,6 +196,10 @@ class Store:
 
     def validate_config(self,data):
         name=text(data.get('name'),100,'task name')
+        group=data.get("group")
+        if group is not None:
+            group=text(group,60,"module group").strip()
+            if any(ord(ch)<32 for ch in group):raise APIError(400,"invalid module group")
         notify_start=data.get("notify_start",True)
         if not isinstance(notify_start,bool):raise APIError(400,"invalid notify_start")
         notify=data.get('notify_on',sorted(NOTIFY))
@@ -221,6 +225,7 @@ class Store:
             try: Template(template).substitute({x:x for x in ['name','status','reason','message','metrics','time','task_id']})
             except (KeyError,ValueError): raise APIError(400,"invalid template; use $name $status $reason $message $metrics $time or $task_id or $")
         config=dict(notify_start=notify_start,notify_on=notify,heartbeat_timeout=hb,runtime_timeout=runtime,rules=checked,subject=subject,body=body)
+        if group is not None:config["group"]=group
         return name,config
 
     def create_task(self,key,data):
@@ -242,7 +247,7 @@ class Store:
     def quick_task(self,data,ip):
         if not self.settings.signup_enabled or not self.settings.mail_enabled:raise APIError(503,'service temporarily unavailable')
         address=email(data.get('email'))
-        allowed={k:data[k] for k in ['name','notify_on','heartbeat_timeout','runtime_timeout','rules','notify_start'] if k in data}
+        allowed={k:data[k] for k in ['name','group','notify_on','heartbeat_timeout','runtime_timeout','rules','notify_start'] if k in data}
         allowed['subject']=DEFAULT_SUBJECT
         allowed['body']='任务：$name\n状态：$status\n触发条件：$reason\n指标：$metrics\n时间：$time'
         name,config=self.validate_config(allowed)
@@ -311,6 +316,7 @@ class Store:
             for row in rows:
                 config=json.loads(row['config']);metrics=json.loads(row['metrics'])
                 item={k:row[k] for k in ['id','name','status','created','heartbeat','finished']}
+                item['group']=config.get('group')
                 item.update(metrics=metrics,heartbeat_received=row['heartbeat_seq']>0,
                             heartbeat_timeout=config['heartbeat_timeout'],runtime_timeout=config['runtime_timeout'],
                             heartbeat_enabled='heartbeat_timeout' in config['notify_on'],rules=config['rules'])

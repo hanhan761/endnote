@@ -145,3 +145,6 @@ test("invalid dashboard link is explicit and stops automatic requests",async()=>
  assert.ok(text(app.nodes.notice).includes("链接无效"));const count=app.calls.length;
  for(const poll of app.intervals)poll.fn();await settle();assert.equal(app.calls.length,count);
 });
+
+
+test("stable module keeps renamed rounds together without merging other modules",async()=>{const app=setup();await settle();const template=app.tasks[0];app.tasks.splice(0,app.tasks.length,{...template,id:"old",name:"旧实验名 第18轮",group:"beam-module",created:700,status:"failed"},{...template,id:"other",name:"新实验名 无关实验",group:"another-module",created:800},{...template,id:"new",name:"新实验名 第19轮",group:"beam-module",created:900});app.intervals.find(t=>t.delay===5000).fn();await settle();const module=rows(app).filter(r=>r.dataset.groupKey==="beam-module");assert.deepEqual(module.map(r=>r.dataset.taskId),["old","new"]);assert.equal(new Set(module.map(r=>r.className.match(/cluster-tone-\d/)[0])).size,1);assert.equal(rows(app).find(r=>r.dataset.taskId==="other").dataset.groupKey,"another-module");});

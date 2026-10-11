@@ -115,7 +115,7 @@ def main():
     p=sub.add_parser("request-code"); p.add_argument("--email")
     p=sub.add_parser("verify"); p.add_argument("--email")
     p=sub.add_parser("list")
-    p=sub.add_parser("run"); p.add_argument("--email"); p.add_argument("--name",required=True); p.add_argument("--heartbeat-timeout",type=int,default=300); p.add_argument("--heartbeat-interval",type=int,default=60); p.add_argument("--runtime-timeout",type=int); p.add_argument("--rules",help="JSON file of metric rules"); p.add_argument("command",nargs=argparse.REMAINDER)
+    p=sub.add_parser("run"); p.add_argument("--email"); p.add_argument("--name",required=True); p.add_argument("--group",help="Stable module name shared by all rounds"); p.add_argument("--heartbeat-timeout",type=int,default=300); p.add_argument("--heartbeat-interval",type=int,default=60); p.add_argument("--runtime-timeout",type=int); p.add_argument("--rules",help="JSON file of metric rules"); p.add_argument("command",nargs=argparse.REMAINDER)
     p=sub.add_parser("event"); p.add_argument("--task",required=True); p.add_argument("--type",required=True,choices=["heartbeat","metric","queued","started","succeeded","failed","cancelled"]); p.add_argument("--metrics",default="{}"); p.add_argument("--message",default="")
     args=parser.parse_args()
     client=Client(args.url)
@@ -147,6 +147,7 @@ def main():
         if command and command[0]=="--": command=command[1:]
         if not command: parser.error("command required after --")
         config={}
+        if args.group: config["group"]=args.group
         if args.email: config["email"]=args.email
         if args.runtime_timeout: config["runtime_timeout"]=args.runtime_timeout
         if args.rules:
