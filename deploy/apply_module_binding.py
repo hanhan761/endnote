@@ -1,7 +1,7 @@
 """Bounded recipient-scoped module binding update; no service restart."""
 import fcntl,hashlib,json,os,re,shutil,socket,sqlite3,subprocess,sys,time,unicodedata
 from pathlib import Path
-from urllib.request import build_opener,ProxyHandler
+from urllib.request import Request,build_opener,ProxyHandler
 from urllib.parse import urlencode
 open_url=build_opener(ProxyHandler({})).open
 DB=Path('/var/lib/endnote/endnote.db')
@@ -18,7 +18,7 @@ def main():
  before_state=state()
  def health():
   for origin in ['http://127.0.0.1:8380','https://am.matterswarm.com']:
-   with open_url(origin+'/endnote/health',timeout=12) as r:assert r.status==200 and json.load(r)['ok']
+   with open_url(Request(origin+'/endnote/health',headers={'User-Agent':'Mozilla/5.0 endnote-check'}),timeout=12) as r:assert r.status==200 and json.load(r)['ok']
  health()
  usage=shutil.disk_usage(DB.parent);peak=DB.stat().st_size*2+32*1024**2
  reserve=2*1024**3 if '--approved-capacity-exception' in sys.argv[2:] else max(2*1024**3,usage.total*.15)
