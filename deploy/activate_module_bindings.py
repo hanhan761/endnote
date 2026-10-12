@@ -12,7 +12,11 @@ import subprocess
 import sys
 import tarfile
 import time
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, ProxyHandler
+
+# Health verification is direct and still uses the standard verified HTTPS handler.
+# Inherited workstation proxy settings are unrelated to the tunnel ingress.
+urlopen = build_opener(ProxyHandler({})).open
 
 ROOT = Path('/opt/endnote')
 BASE = 'd6e4d5342bfd8377440b58bbd0767551743da79f3b67067b3cea0323f43da475'
