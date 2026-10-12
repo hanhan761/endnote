@@ -77,6 +77,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY,email TEXT UNIQUE NOT NULL,key_hash TEXT UNIQUE NOT NULL,created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS mail_preferences(recipient_hash TEXT PRIMARY KEY,token TEXT UNIQUE NOT NULL,blocked INTEGER NOT NULL DEFAULT 0,created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS dashboards(recipient_hash TEXT PRIMARY KEY,token TEXT UNIQUE NOT NULL,created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS dashboard_module_bindings(recipient_hash TEXT NOT NULL,prefix TEXT NOT NULL,module TEXT NOT NULL,PRIMARY KEY(recipient_hash,prefix));
             CREATE TABLE IF NOT EXISTS dashboard_archives(recipient_hash TEXT NOT NULL,task TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,created REAL NOT NULL,PRIMARY KEY(recipient_hash,task));
             CREATE TABLE IF NOT EXISTS samples(task TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,bucket INTEGER NOT NULL,created REAL NOT NULL,metrics TEXT NOT NULL,PRIMARY KEY(task,bucket));
             CREATE TABLE IF NOT EXISTS guest_accounts(id TEXT PRIMARY KEY REFERENCES accounts(id),recipient TEXT NOT NULL,created REAL NOT NULL);
@@ -285,6 +286,7 @@ class Store:
             if not access:raise APIError(404,'dashboard not found')
             self.limit(c,'dashboard:'+access[0],120,60)
         with self.db(read_only=True) as c:
+            bindings=c.execute("SELECT prefix,module FROM dashboard_module_bindings WHERE recipient_hash=?",(access[0],)).fetchall()
             scope="FROM tasks t WHERE t.owner IN (SELECT a.id FROM accounts a LEFT JOIN guest_accounts g ON g.id=a.id WHERE recipient_hash(COALESCE(g.recipient,a.email))=?)"
             archive_clause=' AND '+('' if archived else 'NOT ')+"EXISTS (SELECT 1 FROM dashboard_archives d WHERE d.recipient_hash=? AND d.task=t.id)"
             outage_sql="(t.status='running' AND EXISTS (SELECT 1 FROM json_each(t.config,'$.notify_on') WHERE value='heartbeat_timeout') AND ?-t.heartbeat>=json_extract(t.config,'$.heartbeat_timeout'))"
@@ -316,7 +318,8 @@ class Store:
             for row in rows:
                 config=json.loads(row['config']);metrics=json.loads(row['metrics'])
                 item={k:row[k] for k in ['id','name','status','created','heartbeat','finished']}
-                item['group']=config.get('group')
+                from .grouping import canonical_group
+                item['group']=canonical_group(row['name'],config.get('group'),bindings)
                 item.update(metrics=metrics,heartbeat_received=row['heartbeat_seq']>0,
                             heartbeat_timeout=config['heartbeat_timeout'],runtime_timeout=config['runtime_timeout'],
                             heartbeat_enabled='heartbeat_timeout' in config['notify_on'],rules=config['rules'])
