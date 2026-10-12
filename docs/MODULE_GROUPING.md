@@ -9,3 +9,7 @@ python -m endnote.client run --group beam-module --name "New name round19" -- py
 SDK: client.experiment("New name round19", group="beam-module").
 
 Existing related records can receive the same group through a bounded operator assignment: exact task IDs, checked common recipient, preflight, private rollback receipt, and config-only transaction. No matching by similar titles, no status mutation, and no automatic experiment restart. Other recipients remain isolated. Assignment IDs and recipient data do not belong in the public release.
+
+## Attention ordering
+
+Whole visible module groups sort by their highest attention state: any outage or failed task first; any succeeded or cancelled task next; groups with only running, queued or waiting tasks last. Equal-priority groups retain alphabetical order and each group retains chronological member order. Polls recompute priority, so state changes move the whole group. Archived records remain in their separate view and do not affect the normal overview.

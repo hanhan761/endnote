@@ -19,6 +19,7 @@ class Element{
 }
 function text(node){return (node.textContent||"")+node.children.map(text).join("");}
 async function settle(){for(let i=0;i<20;i++)await Promise.resolve();}
+function rowFor(app,id="1".repeat(32)){return rows(app).find(row=>row.dataset.taskId===id);}
 function rows(app){return app.nodes.tasks.children.filter(row=>row.dataset.taskId);}
 function setup(){
  const pending=[];let hold=false,readStatus=200,retryAfter="",clock=Date.now();
@@ -40,14 +41,14 @@ test("compact status rows render safe text and update automatically every five s
  app.tasks[0].metrics.loss=.1;app.intervals[0].fn();await settle();assert.ok(text(app.nodes.tasks).includes("0.1"));assert.equal(app.nodes.summary.children.length,0);assert.equal(app.nodes["machine-empty"].hidden,false);
 });
 test("ended task archives from overview and restores without deleting data",async()=>{
- const app=setup();await settle();const runningAction=rows(app)[0].children.at(-1);assert.equal(runningAction.children.length,0);
- const archive=rows(app)[1].children.at(-1).children[0];await archive.onclick();await settle();assert.equal(rows(app).length,1);assert.equal(app.tasks.length,2);assert.ok(app.archived.has("2".repeat(32)));
+ const app=setup();await settle();const runningAction=rowFor(app).children.at(-1);assert.equal(runningAction.children.length,0);
+ const archive=rowFor(app,"2".repeat(32)).children.at(-1).children[0];await archive.onclick();await settle();assert.equal(rows(app).length,1);assert.equal(app.tasks.length,2);assert.ok(app.archived.has("2".repeat(32)));
  app.nodes.tabs.children.find(button=>text(button).startsWith("已归档")).onclick();await settle();assert.equal(rows(app).length,1);assert.ok(text(app.nodes.tasks).includes("恢复"));
  await rows(app)[0].children.at(-1).children[0].onclick();await settle();assert.equal(app.archived.size,0);assert.equal(rows(app).length,0);
 });
 test("search goes to server and detail loads trends only when opened",async()=>{
  const app=setup();await settle();app.nodes.search.value="seed42";app.nodes.search.oninput();const debounce=[...app.timers.values()].find(t=>t.delay===250);assert.ok(debounce);debounce.fn();await settle();assert.ok(app.calls.at(-1).url.includes("q=seed42"));
- rows(app)[0].children[0].children[0].onclick();await settle();assert.equal(app.nodes.detail.open,true);assert.ok(app.calls.at(-1).url.includes("task="+"1".repeat(32)));assert.ok(app.calls.at(-1).url.includes("trends=1"));assert.ok(text(app.nodes["detail-content"]).includes("指标趋势"));app.nodes["close-detail"].onclick();assert.equal(app.nodes.detail.open,false);
+ rowFor(app).children[0].children[0].onclick();await settle();assert.equal(app.nodes.detail.open,true);assert.ok(app.calls.at(-1).url.includes("task="+"1".repeat(32)));assert.ok(app.calls.at(-1).url.includes("trends=1"));assert.ok(text(app.nodes["detail-content"]).includes("指标趋势"));app.nodes["close-detail"].onclick();assert.equal(app.nodes.detail.open,false);
 });
 test("offline and tab visibility explain stale data and reconnect automatically",async()=>{
  const app=setup();await settle();app.events.offline();assert.ok(app.nodes.connection.className.includes("stale"));assert.ok(text(app.nodes.notice).includes("上次更新"));const count=app.calls.length;app.events.online();await settle();assert.ok(app.calls.length>count);assert.ok(!app.nodes.connection.className.includes("stale"));app.document.hidden=true;const hiddenCount=app.calls.length;app.intervals[0].fn();await settle();assert.equal(app.calls.length,hiddenCount);
@@ -75,7 +76,7 @@ test("project groups keep attempts together in creation order across status upda
 
 });
 
-test("queued is explicit, persists through heartbeats, and yields to outage or completion",async()=>{const app=setup();await settle();app.tasks[0].metrics.endnote_queued=1;app.intervals[0].fn();await settle();assert.ok(text(rows(app)[0]).includes("排队中"));assert.ok(!text(rows(app)[0]).includes("endnote_queued"));app.tasks[0].outage=true;app.intervals[0].fn();await settle();assert.ok(text(rows(app)[0]).includes("心跳失联"));app.tasks[0].outage=false;app.tasks[0].status="succeeded";app.intervals[0].fn();await settle();assert.ok(text(rows(app)[0]).includes("已成功"));app.tasks[0].status="running";app.tasks[0].metrics.endnote_queued=0;app.intervals[0].fn();await settle();assert.ok(text(rows(app)[0]).includes("运行中"));});
+test("queued is explicit, persists through heartbeats, and yields to outage or completion",async()=>{const app=setup();await settle();app.tasks[0].metrics.endnote_queued=1;app.intervals[0].fn();await settle();assert.ok(text(rowFor(app)).includes("排队中"));assert.ok(!text(rowFor(app)).includes("endnote_queued"));app.tasks[0].outage=true;app.intervals[0].fn();await settle();assert.ok(text(rowFor(app)).includes("心跳失联"));app.tasks[0].outage=false;app.tasks[0].status="succeeded";app.intervals[0].fn();await settle();assert.ok(text(rowFor(app)).includes("已成功"));app.tasks[0].status="running";app.tasks[0].metrics.endnote_queued=0;app.intervals[0].fn();await settle();assert.ok(text(rowFor(app)).includes("运行中"));});
 
 test("optional multi-machine dials replace task totals without inventing missing metrics",async()=>{
  const app=setup();await settle();const metrics={cpu_percent:24,cpu_temperature:55,memory_total:32*1024**3,memory_used:16*1024**3,disk_total:1024**4,disk_used:256*1024**3,gpus:[{index:0,name:"NVIDIA RTX 4090",percent:99,temperature:73,memory_total:24*1024**3,memory_used:8*1024**3,power:330},{index:1,name:"GPU second",percent:55,temperature:68,memory_total:24*1024**3,memory_used:4*1024**3}]};
@@ -148,3 +149,6 @@ test("invalid dashboard link is explicit and stops automatic requests",async()=>
 
 
 test("stable module keeps renamed rounds together without merging other modules",async()=>{const app=setup();await settle();const template=app.tasks[0];app.tasks.splice(0,app.tasks.length,{...template,id:"old",name:"旧实验名 第18轮",group:"beam-module",created:700,status:"failed"},{...template,id:"other",name:"新实验名 无关实验",group:"another-module",created:800},{...template,id:"new",name:"新实验名 第19轮",group:"beam-module",created:900});app.intervals.find(t=>t.delay===5000).fn();await settle();const module=rows(app).filter(r=>r.dataset.groupKey==="beam-module");assert.deepEqual(module.map(r=>r.dataset.taskId),["old","new"]);assert.equal(new Set(module.map(r=>r.className.match(/cluster-tone-\d/)[0])).size,1);assert.equal(rows(app).find(r=>r.dataset.taskId==="other").dataset.groupKey,"another-module");});
+
+
+test("attention groups lead completed groups and healthy groups remain below without splitting modules",async()=>{const app=setup();await settle();const template=app.tasks[0];app.tasks.splice(0,app.tasks.length,{...template,id:"active",name:"A normal",group:"A",created:100},{...template,id:"done",name:"B finished",group:"B",created:200,status:"succeeded"},{...template,id:"fail",name:"C failed",group:"C",created:300,status:"failed"},{...template,id:"same",name:"C running",group:"C",created:400},{...template,id:"queue",name:"D queued",group:"D",created:500,metrics:{endnote_queued:1}},{...template,id:"lost",name:"E lost",group:"E",created:600,outage:true});app.intervals[0].fn();await settle();assert.deepEqual(rows(app).map(r=>r.dataset.taskId),["fail","same","lost","done","active","queue"]);app.tasks.find(t=>t.id==="lost").outage=false;app.tasks.find(t=>t.id==="active").status="succeeded";app.intervals[0].fn();await settle();assert.deepEqual(rows(app).map(r=>r.dataset.taskId),["fail","same","active","done","queue","lost"]);});
