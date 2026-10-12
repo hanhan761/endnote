@@ -339,9 +339,11 @@ class Store:
             access=c.execute('SELECT recipient_hash FROM dashboards WHERE token=?',(token,)).fetchone()
             if not access:raise APIError(404,'dashboard not found')
             self.limit(c,'dashboard-archive:'+access[0],60,60)
-            task=c.execute('SELECT t.status FROM tasks t JOIN accounts a ON a.id=t.owner LEFT JOIN guest_accounts g ON g.id=a.id WHERE t.id=? AND recipient_hash(COALESCE(g.recipient,a.email))=?',(task_id,access[0])).fetchone()
+            task=c.execute('SELECT t.status,t.heartbeat,t.config FROM tasks t JOIN accounts a ON a.id=t.owner LEFT JOIN guest_accounts g ON g.id=a.id WHERE t.id=? AND recipient_hash(COALESCE(g.recipient,a.email))=?',(task_id,access[0])).fetchone()
             if not task:raise APIError(404,'task not found')
-            if task['status'] not in TERMINAL:raise APIError(409,'只有已结束的任务可以归档')
+            config=json.loads(task['config'])
+            outage=task['status']=='running' and 'heartbeat_timeout' in config['notify_on'] and self.clock()-task['heartbeat']>=config['heartbeat_timeout']
+            if archived and task['status'] not in TERMINAL and not outage:raise APIError(409,'只有已结束或心跳失联的任务可以归档；该任务可能已恢复心跳')
             if archived:c.execute('INSERT INTO dashboard_archives VALUES(?,?,?) ON CONFLICT DO NOTHING',(access[0],task_id,self.clock()))
             else:c.execute('DELETE FROM dashboard_archives WHERE recipient_hash=? AND task=?',(access[0],task_id))
         return {'ok':True,'archived':archived}
