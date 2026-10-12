@@ -24,3 +24,11 @@ class ModuleBindingTests(unittest.TestCase):
  def test_prefix_boundaries_do_not_merge_unrelated_module(self):
   self.store.create_task(self.key,{'name':'NumeraiOther round','group':'NumeraiOther'})
   self.assertEqual(next(t for t in self.store.dashboard(self.token)['tasks'] if t['name']=='NumeraiOther round')['group'],'NumeraiOther')
+
+ def test_confirmed_casmi_aliases_merge_versions_without_similar_namespace(self):
+  from endnote.grouping import canonical_group
+  bindings=[('casmi','CASMI 2026'),('casmi26','CASMI 2026'),('casmi2026','CASMI 2026')]
+  for group in ['CASMI','CASMI26','CASMI2026','CASMI26 FIORA','CASMI26 V22 FIORA']:
+   self.assertEqual(canonical_group('Round',group,bindings),'CASMI 2026')
+  self.assertIsNone(canonical_group('Other round',None,bindings))
+  self.assertEqual(canonical_group('CASMI2027 next year','CASMI2027',bindings),'CASMI2027')
