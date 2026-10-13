@@ -9,6 +9,8 @@ let snapshot=null,view="all",offset=0,query="",loading=false,revision=0,controll
 let retryTimer=null,failures=0,invalidLink=false,detailController=null;
 let machineLoading=false,machineController=null,machineFailures=0,machineRetryAt=0,machineUpdated=0;
 const STALE_AFTER=30000;
+const archivePending=new Set();
+let archiveNotice="";
 function el(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
 function now(){return Date.now()/1000+clockOffset;}
 function duration(seconds){seconds=Math.max(0,Math.floor(seconds));if(seconds<60)return seconds+" 秒";if(seconds<3600)return Math.floor(seconds/60)+" 分 "+seconds%60+" 秒";if(seconds<86400)return Math.floor(seconds/3600)+" 时 "+Math.floor(seconds%3600/60)+" 分";return Math.floor(seconds/86400)+" 天 "+Math.floor(seconds%86400/3600)+" 时";}
@@ -46,10 +48,11 @@ const title=el("td"),nameButton=el("button",undefined,"task-name");nameButton.ty
 const statusCell=el("td");statusCell.append(el("span",labels[key],"badge "+key));const heartbeat=el("td"),heartbeatText=task.heartbeat_received?duration(now()-task.heartbeat)+"前":"等待首次上报";heartbeat.title=task.heartbeat_received?"最后上报："+date(task.heartbeat)+"；失联阈值："+duration(task.heartbeat_timeout):"任务已创建，尚未收到第一个事件";heartbeat.append(el("span",heartbeatText,"heartbeat "+(task.outage?"lost":task.status==="running"?"fresh":"")));
 const elapsed=el("td",duration((task.finished||now())-task.created),"duration-col runtime"),metrics=el("td",undefined,"metrics-col");let entries=Object.entries(task.metrics).filter(([name])=>name!=="endnote_queued");entries.sort(([a],[b])=>a===task.trend_metric?-1:b===task.trend_metric?1:0);metrics.title=entries.map(([key,val])=>key+" = "+val).join(" · ");for(const [key,val] of entries.slice(0,1)){const item=el("span",undefined,"metric-inline");item.append(el("span",key),el("b",value(val)));metrics.append(item);}if(!entries.length)metrics.append(el("span","尚未上报","metric-missing"));
 const mail=el("td",undefined,"mail-col"),notice=task.notifications[0];const mailText=notice?(reasons[notice.kind]||"指标")+" · "+(mailStates[notice.state]||notice.state):"—";mail.title=notice?date(notice.created)+"；已发送表示 SMTP 已接受，不保证进入收件箱":"暂无通知";mail.append(el("span",mailText,"mail-inline"+(notice?.state==="dead"?" error":"")));
-const action=el("td");if(view==="archived"||task.outage||["succeeded","failed","cancelled"].includes(task.status)){const button=el("button",view==="archived"?"恢复":"归档","archive-button");button.title=view==="archived"?"恢复到总览":"从默认总览移除，可以恢复";button.type="button";button.onclick=()=>archive(task,button,view!=="archived");action.append(button);}row.append(title,statusCell,heartbeat,elapsed,metrics,mail,action);$("tasks").append(row);}}
+const action=el("td");if(view==="archived"||task.outage||["succeeded","failed","cancelled"].includes(task.status)){const button=el("button",view==="archived"?"恢复":"归档","archive-button");button.title=view==="archived"?"恢复到总览":"从默认总览移除，可以恢复";button.type="button";const targetArchived=view!=="archived";button.onclick=()=>archive(task,button,targetArchived);action.append(button);}row.append(title,statusCell,heartbeat,elapsed,metrics,mail,action);$("tasks").append(row);}}
 $("result-count").textContent=tasks.length?"显示 "+(offset+1)+"–"+(offset+tasks.length)+" / "+snapshot.total+" 个任务 · 本页 "+groups.length+" 组":"0 个任务";$("previous").disabled=offset===0;$("next").disabled=!snapshot.has_more;$("page").textContent=(Math.floor(offset/200)+1)+" / "+Math.max(1,Math.ceil(snapshot.total/200));$("updated").textContent="最后更新 "+new Date(lastUpdated).toLocaleTimeString();}
 async function refresh(force=false){
  if(!endpoint){showNotice("请打开邮件里的完整状态链接。");return;}
+ if(archivePending.size)return;
  if(invalidLink||(loading&&!force)||(!force&&retryTimer!==null))return;
  clearTimeout(retryTimer);retryTimer=null;
  if(controller)controller.abort();cancelMachineRead();if(detailController)detailController.abort();
@@ -61,7 +64,7 @@ async function refresh(force=false){
   snapshot=data;clockOffset=data.now-Date.now()/1000;lastUpdated=Date.now();machineUpdated=lastUpdated;
   failures=0;machineFailures=0;machineRetryAt=0;
   if(offset>0&&!data.tasks.length){offset=Math.max(0,offset-200);loading=false;return refresh(true);}
-  connection(true);showNotice(data.blocked?"此邮箱已屏蔽后续邮件，任务记录仍可查看和归档。":"");
+  connection(true);showNotice(archiveNotice|| (data.blocked?"此邮箱已屏蔽后续邮件，任务记录仍可查看和归档。":""));
   renderSummary();renderTabs();renderTable();succeeded=true;
  }catch(error){
   if(current!==revision)return;
@@ -71,7 +74,35 @@ async function refresh(force=false){
   clearTimeout(timer);if(current===revision){loading=false;if(succeeded&&detailId)refreshDetail();}
  }
 }
-async function archive(task,button,archived){button.disabled=true;const abort=new AbortController();const timeout=setTimeout(()=>abort.abort(),8000);try{const response=await fetch(endpoint+"/archive",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task_id:task.id,archived}),referrerPolicy:"no-referrer",signal:abort.signal});if(!response.ok){let message="整理失败，请稍后重试。";try{message=(await response.json()).error||message;}catch{}throw new Error(message);}if(detailId===task.id)closeDetail();await refresh(true);}catch(error){showNotice(error.message);}finally{clearTimeout(timeout);button.disabled=false;}}
+function adjustArchive(task,archived,direction){
+ const delta=(archived?1:-1)*direction;
+ snapshot.archived_count=Math.max(0,(snapshot.archived_count||0)+delta);
+ const key=state(task);snapshot.summary={...snapshot.summary,[key]:Math.max(0,(snapshot.summary[key]||0)-delta)};
+}
+async function archive(task,button,archived){
+ if(archivePending.has(task.id))return;
+ archivePending.add(task.id);archiveNotice="";showNotice();button.disabled=true;
+ // Superseded reads must never reinsert a row while its write is pending.
+ ++revision;if(controller)controller.abort();loading=false;cancelMachineRead();
+ clearTimeout(retryTimer);retryTimer=null;
+ if(detailId===task.id)closeDetail();
+ snapshot.tasks=snapshot.tasks.filter(item=>item.id!==task.id);snapshot.total=Math.max(0,snapshot.total-1);
+ adjustArchive(task,archived,1);renderTabs();renderTable();showNotice("正在保存整理结果…");
+ const abort=new AbortController(),timeout=setTimeout(()=>abort.abort(),8000);
+ try{
+  const response=await fetch(endpoint+"/archive",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task_id:task.id,archived}),referrerPolicy:"no-referrer",signal:abort.signal});
+  if(!response.ok){let message="整理失败，请稍后重试。";try{message=(await response.json()).error||message;}catch{}throw new Error(message);}
+ }catch(error){
+  snapshot.tasks.push(task);snapshot.total++;adjustArchive(task,archived,-1);renderTabs();renderTable();
+  archiveNotice=error.name==="AbortError"?"整理结果暂未确认，已恢复显示，正在同步实际状态。": "整理未完成，已恢复显示。"+error.message;
+  showNotice(archiveNotice);
+ }finally{
+  clearTimeout(timeout);archivePending.delete(task.id);button.disabled=false;
+  // Reconcile counts/pagination once, after all concurrent writes finish.
+  if(!archivePending.size){showNotice(archiveNotice);void refresh(true);}
+ }
+}
+
 function detailField(label,text){const field=el("div",undefined,"detail-field");field.append(el("span",label),el("strong",text));return field;}
 function chart(task){if(task.trend_metric==="endnote_queued")task={...task,trend_metric:null,trend:[]};const box=el("section",undefined,"chart");box.append(el("div",task.trend_metric?task.trend_metric+" · 指标趋势":"指标趋势","section-label"));if(task.trend.length<2){box.append(el("p","历史数据不足，至少需要两个采样点。","chart-caption"));return box;}const values=task.trend.map(p=>p.value),lo=Math.min(...values),hi=Math.max(...values),start=task.trend[0].time,end=task.trend.at(-1).time,svg=document.createElementNS("http://www.w3.org/2000/svg","svg");svg.setAttribute("viewBox","0 0 420 120");svg.setAttribute("role","img");svg.setAttribute("aria-label",task.trend_metric+" 趋势");for(const y of [20,60,100]){const line=document.createElementNS(svg.namespaceURI,"line");line.setAttribute("x1","0");line.setAttribute("x2","420");line.setAttribute("y1",String(y));line.setAttribute("y2",String(y));line.setAttribute("stroke","#edf1e7");svg.append(line);}const graph=document.createElementNS(svg.namespaceURI,"polyline");graph.setAttribute("points",task.trend.map(p=>[4+412*(p.time-start)/(end-start||1),hi===lo?60:108-96*(p.value-lo)/(hi-lo)].join(",")).join(" "));graph.setAttribute("fill","none");graph.setAttribute("stroke","#668656");graph.setAttribute("stroke-width","2");svg.append(graph);box.append(svg,el("div",date(start)+" → "+date(end)+" · "+task.trend.length+" 个采样点","chart-caption"));return box;}
 function renderDetail(task){$("detail-name").textContent=task.name;const content=$("detail-content");content.replaceChildren(el("div","#"+task.id,"detail-id"));content.append(el("span",labels[state(task)],"badge "+state(task)));const meta=el("div",undefined,"detail-meta");meta.append(detailField("创建时间",date(task.created)),detailField("运行时长",duration((task.finished||now())-task.created)),detailField("最后上报",task.heartbeat_received?date(task.heartbeat):"等待首次上报"),detailField("失联阈值",task.heartbeat_enabled?duration(task.heartbeat_timeout):"未启用"));if(task.runtime_timeout)meta.append(detailField("运行时长上限",duration(task.runtime_timeout)));if(task.finished)meta.append(detailField("结束时间",date(task.finished)));content.append(meta);const metrics=el("div",undefined,"detail-metrics");for(const [key,val] of Object.entries(task.metrics).filter(([name])=>name!=="endnote_queued")){const item=el("div",undefined,"detail-metric");item.append(el("span",key+" "),el("b",value(val)));metrics.append(item);}if(metrics.childElementCount)content.append(metrics);content.append(chart(task));const notices=el("section",undefined,"detail-notices");notices.append(el("div","通知记录","section-label"));for(const notice of task.notifications){const item=el("div",undefined,"notification");item.append(el("span",(reasons[notice.kind]||"指标达标")+" · "+(mailStates[notice.state]||notice.state)),el("span",date(notice.created)));notices.append(item);}content.append(notices);}
