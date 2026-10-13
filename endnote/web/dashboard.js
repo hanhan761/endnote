@@ -10,7 +10,7 @@ let retryTimer=null,failures=0,invalidLink=false,detailController=null;
 let machineLoading=false,machineController=null,machineFailures=0,machineRetryAt=0,machineUpdated=0;
 const STALE_AFTER=30000;
 const archivePending=new Set();
-let archiveNotice="";
+let archiveNotice="",archiveLayout=null,archiveRefreshNeeded=false;
 function el(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
 function now(){return Date.now()/1000+clockOffset;}
 function duration(seconds){seconds=Math.max(0,Math.floor(seconds));if(seconds<60)return seconds+" 秒";if(seconds<3600)return Math.floor(seconds/60)+" 分 "+seconds%60+" 秒";if(seconds<86400)return Math.floor(seconds/3600)+" 时 "+Math.floor(seconds%3600/60)+" 分";return Math.floor(seconds/86400)+" 天 "+Math.floor(seconds%86400/3600)+" 时";}
@@ -42,7 +42,8 @@ function groupPriority(group){const states=group.tasks.map(state);return states.
 function taskGroups(tasks){const groups=new Map();for(const task of tasks){const title=typeof task.group==="string"&&task.group.trim()?task.group.trim():task.name.trim().split(/[\s·|｜:：]+/u)[0]||"未命名任务",key=title.normalize("NFKC").toLocaleLowerCase();if(!groups.has(key))groups.set(key,{key,title,tasks:[]});groups.get(key).tasks.push(task);}return [...groups.values()].sort((a,b)=>groupPriority(a)-groupPriority(b)||groupOrder.compare(a.title,b.title)).map(group=>({...group,tasks:group.tasks.sort((a,b)=>a.created-b.created||a.id.localeCompare(b.id))}));}
 function clusterTone(key){let hash=0;for(const char of key)hash=(Math.imul(hash,31)+char.codePointAt(0))>>>0;return hash%6;}
 function renderTable(){const tasks=snapshot.tasks;$("tasks").replaceChildren();$("empty").hidden=tasks.length>0;if(!tasks.length)$("empty").textContent=query?"没有匹配的实验。":"archived"===view?"还没有归档任务。结束后点击“归档”，它会收进这里。":"这个视图暂时没有任务。状态会自动更新，无需刷新。";
-const groups=taskGroups(tasks);let previousTone=-1;for(const group of groups){let tone=clusterTone(group.key);if(tone===previousTone)tone=(tone+1)%6;previousTone=tone;const names=new Map(),positions=new Map();for(const task of group.tasks)names.set(task.name,(names.get(task.name)||0)+1);
+if(archiveLayout&&tasks.some(t=>!archiveLayout.states.has(t.id)||archiveLayout.states.get(t.id)!==state(t)))archiveLayout=null;
+const groups=taskGroups(tasks);if(archiveLayout)groups.sort((a,b)=>archiveLayout.groups.indexOf(a.key)-archiveLayout.groups.indexOf(b.key));let previousTone=-1;for(const group of groups){let tone=clusterTone(group.key);if(tone===previousTone)tone=(tone+1)%6;if(archiveLayout&&archiveLayout.tones.has(group.key))tone=archiveLayout.tones.get(group.key);previousTone=tone;const names=new Map(),positions=new Map();for(const task of group.tasks)names.set(task.name,(names.get(task.name)||0)+1);
 for(const [index,task] of group.tasks.entries()){const key=state(task),row=el("tr",undefined,"cluster-row cluster-tone-"+tone+(index===0?" group-start":"")+(key==="outage"?" outage-row":""));row.dataset.taskId=task.id;row.dataset.groupKey=group.key;
 const title=el("td"),nameButton=el("button",undefined,"task-name");nameButton.type="button";nameButton.title=task.name+" · #"+task.id;nameButton.append(el("span",task.name,"name"),el("span","#"+task.id.slice(0,8),"short-id"));if(names.get(task.name)>1){const position=(positions.get(task.name)||0)+1;positions.set(task.name,position);nameButton.append(el("span","记录 "+position+"/"+names.get(task.name),"record-number"));}nameButton.onclick=()=>openDetail(task);title.append(nameButton);
 const statusCell=el("td");statusCell.append(el("span",labels[key],"badge "+key));const heartbeat=el("td"),heartbeatText=task.heartbeat_received?duration(now()-task.heartbeat)+"前":"等待首次上报";heartbeat.title=task.heartbeat_received?"最后上报："+date(task.heartbeat)+"；失联阈值："+duration(task.heartbeat_timeout):"任务已创建，尚未收到第一个事件";heartbeat.append(el("span",heartbeatText,"heartbeat "+(task.outage?"lost":task.status==="running"?"fresh":"")));
@@ -52,7 +53,8 @@ const action=el("td");if(view==="archived"||task.outage||["succeeded","failed","
 $("result-count").textContent=tasks.length?"显示 "+(offset+1)+"–"+(offset+tasks.length)+" / "+snapshot.total+" 个任务 · 本页 "+groups.length+" 组":"0 个任务";$("previous").disabled=offset===0;$("next").disabled=!snapshot.has_more;$("page").textContent=(Math.floor(offset/200)+1)+" / "+Math.max(1,Math.ceil(snapshot.total/200));$("updated").textContent="最后更新 "+new Date(lastUpdated).toLocaleTimeString();}
 async function refresh(force=false){
  if(!endpoint){showNotice("请打开邮件里的完整状态链接。");return;}
- if(archivePending.size)return;
+ if(archivePending.size){if(force)archiveRefreshNeeded=true;return;}
+ if(force)archiveLayout=null;
  if(invalidLink||(loading&&!force)||(!force&&retryTimer!==null))return;
  clearTimeout(retryTimer);retryTimer=null;
  if(controller)controller.abort();cancelMachineRead();if(detailController)detailController.abort();
@@ -74,6 +76,14 @@ async function refresh(force=false){
   clearTimeout(timer);if(current===revision){loading=false;if(succeeded&&detailId)refreshDetail();}
  }
 }
+function updateArchiveCounts(){
+ const counts=snapshot.summary,total=Object.values(counts).reduce((a,b)=>a+b,0);
+ const values=[total,(counts.running||0)+(counts.waiting||0)+(counts.queued||0),counts.queued||0,counts.outage||0,(counts.succeeded||0)+(counts.failed||0)+(counts.cancelled||0),snapshot.archived_count||0];
+ Array.from($("tabs").children).forEach((button,i)=>{button.children[1].textContent=String(values[i]);});
+ const tasks=snapshot.tasks,groups=new Set(Array.from($("tasks").children).map(row=>row.dataset.groupKey));
+ $("result-count").textContent=tasks.length?"显示 "+(offset+1)+"–"+(offset+tasks.length)+" / "+snapshot.total+" 个任务 · 本页 "+groups.size+" 组":"0 个任务";
+ $("empty").hidden=tasks.length>0;if(!tasks.length)$("empty").textContent="当前视图已整理完。";
+}
 function adjustArchive(task,archived,direction){
  const delta=(archived?1:-1)*direction;
  snapshot.archived_count=Math.max(0,(snapshot.archived_count||0)+delta);
@@ -86,20 +96,25 @@ async function archive(task,button,archived){
  ++revision;if(controller)controller.abort();loading=false;cancelMachineRead();
  clearTimeout(retryTimer);retryTimer=null;
  if(detailId===task.id)closeDetail();
+ const existing=Array.from($("tasks").children),row=existing.find(item=>item.dataset.taskId===task.id);
+ const index=existing.indexOf(row);
+ if(!archiveLayout)archiveLayout={groups:[...new Set(existing.map(item=>item.dataset.groupKey))],tones:new Map(existing.map(item=>[item.dataset.groupKey,Number(item.className.match(/cluster-tone-(\d)/)[1])])),states:new Map(snapshot.tasks.map(item=>[item.id,state(item)]))};
  snapshot.tasks=snapshot.tasks.filter(item=>item.id!==task.id);snapshot.total=Math.max(0,snapshot.total-1);
- adjustArchive(task,archived,1);renderTabs();renderTable();showNotice("正在保存整理结果…");
+ row?.remove();adjustArchive(task,archived,1);updateArchiveCounts();
  const abort=new AbortController(),timeout=setTimeout(()=>abort.abort(),8000);
  try{
   const response=await fetch(endpoint+"/archive",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task_id:task.id,archived}),referrerPolicy:"no-referrer",signal:abort.signal});
   if(!response.ok){let message="整理失败，请稍后重试。";try{message=(await response.json()).error||message;}catch{}throw new Error(message);}
  }catch(error){
-  snapshot.tasks.push(task);snapshot.total++;adjustArchive(task,archived,-1);renderTabs();renderTable();
+  snapshot.tasks.push(task);snapshot.total++;adjustArchive(task,archived,-1);
+  if(row){const next=existing.slice(index+1).find(item=>Array.from($("tasks").children).includes(item));$("tasks").insertBefore(row,next||null);}
+  updateArchiveCounts();archiveRefreshNeeded=true;
   archiveNotice=error.name==="AbortError"?"整理结果暂未确认，已恢复显示，正在同步实际状态。": "整理未完成，已恢复显示。"+error.message;
   showNotice(archiveNotice);
  }finally{
   clearTimeout(timeout);archivePending.delete(task.id);button.disabled=false;
-  // Reconcile counts/pagination once, after all concurrent writes finish.
-  if(!archivePending.size){showNotice(archiveNotice);void refresh(true);}
+  // Successful writes need no full refresh. Only reconcile failures or deferred navigation.
+  if(!archivePending.size&&archiveRefreshNeeded){archiveRefreshNeeded=false;void refresh(true);}
  }
 }
 
